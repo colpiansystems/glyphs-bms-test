@@ -1853,7 +1853,7 @@ async function doLogin() {
     const r = await fetch(SUPABASE_CONFIG.pinAuthUrl, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json', 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` },
-      body:    JSON.stringify({ name: nameInput, pin: pinInput })
+      body:    JSON.stringify({ p_staff_name: nameInput, p_plain_pin: pinInput })
     });
 
     const data = await r.json();
