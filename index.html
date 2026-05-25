@@ -1852,7 +1852,7 @@ async function doLogin() {
     // Call the Edge Function — name + PIN go over HTTPS, never logged
     const r = await fetch(SUPABASE_CONFIG.pinAuthUrl, {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json', 'apikey': SB_KEY },
+      headers: { 'Content-Type': 'application/json', 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` },
       body:    JSON.stringify({ name: nameInput, pin: pinInput })
     });
 
@@ -3848,7 +3848,7 @@ async function saveStaff(){
     // Call the add-staff Edge Function — it owns all three creation steps
     const resp = await fetch(SUPABASE_CONFIG.addStaffUrl, {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json', 'apikey': SB_KEY },
+      headers: { 'Content-Type': 'application/json', 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` },
       body:    JSON.stringify({
         full_name:   n,
         role:        r,
@@ -4015,7 +4015,7 @@ async function testSupabase(){
   try{
     // Test by fetching branches table (public read, no auth required)
     const r=await fetch(`${SB_URL}/rest/v1/branches?select=name&limit=1`,{
-      headers:{'apikey':SB_KEY,'Content-Type':'application/json'}
+      headers:{'apikey':SB_KEY,'Content-Type':'application/json','Authorization':`Bearer ${SB_KEY}`}
     });
     if(r.ok){
       setPill('ok');
@@ -4269,7 +4269,7 @@ async function refreshSession() {
   try {
     const r = await fetch(`${SB_URL}/auth/v1/token?grant_type=refresh_token`, {
       method:  'POST',
-      headers: {'apikey': SB_KEY, 'Content-Type': 'application/json'},
+      headers: {'apikey': SB_KEY, 'Content-Type': 'application/json', 'Authorization': `Bearer ${SB_KEY}`},
       body:    JSON.stringify({refresh_token: _sbSession.refresh_token})
     });
 
