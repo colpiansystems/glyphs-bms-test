@@ -2587,17 +2587,50 @@ function calcEVat(){const a=parseFloat(document.getElementById('eAm').value)||0,
 // ══ CUSTOMERS ══
 let _cF='';
 async function saveCust(){
-  const n=sanitise(document.getElementById('cN').value), p=sanitise(document.getElementById('cP').value);
-  if(!n||!p)return toastErr('Name and primary phone are required.');
-  const row={name:n,phone:p,whatsapp:sanitise(document.getElementById('cWA').value),email:sanitise(document.getElementById('cE').value),branch_name:document.getElementById('cB').value,notes:sanitise(document.getElementById('cNote').value),is_active:true,created_by:currentUser?.id||null};
-  const saved=await sbInsert('customers',row);
-  if(!saved)return toastErr('Customer was not saved to Supabase. Check connection or policy.');
-  const c={id:saved.id,name:saved.name,phone:saved.phone||'',whatsapp:saved.whatsapp||'',email:saved.email||'',branch:saved.branch_name,notes:saved.notes||''};
-  db.customers.push(c);
-  auditLog('customer',`Customer registered: ${n}`,`Phone: ${p} | Branch: ${c.branch}`,n);
-  saveDB();closeM('mCust');rCustomers();rDash();
-  ['cN','cP','cWA','cE','cNote'].forEach(x=>document.getElementById(x).value='');
-  toastOk('Customer saved to Supabase.');
+  const n = sanitise(document.getElementById('cN').value);
+  const p = sanitise(document.getElementById('cP').value);
+
+  if(!n || !p) return toastErr('Name and primary phone are required.');
+
+  const row = {
+    name: n,
+    phone: p,
+    whatsapp: sanitise(document.getElementById('cWA').value),
+    email: sanitise(document.getElementById('cE').value),
+    branch_name: document.getElementById('cB').value,
+    notes: sanitise(document.getElementById('cNote').value),
+    is_active: true,
+    created_by_id: currentUser?.id || null
+  };
+
+  try{
+    const savedRows = await sbInsert('customers', row);
+    const saved = Array.isArray(savedRows) ? savedRows[0] : savedRows;
+
+    db.customers.push({
+      id: saved.id,
+      name: saved.name,
+      phone: saved.phone,
+      whatsapp: saved.whatsapp || '',
+      email: saved.email || '',
+      branch: saved.branch_name,
+      notes: saved.notes || ''
+    });
+
+    auditLog('customer', `Customer registered: ${n}`, `Phone: ${p} | Branch: ${row.branch_name}`, n);
+
+    saveDB();
+    closeM('mCust');
+    rCustomers();
+    rDash();
+    toastOk('Customer saved successfully.');
+
+    ['cN','cP','cWA','cE','cNote'].forEach(x=>document.getElementById(x).value='');
+  }catch(e){
+    console.error('saveCust error:', e);
+    toastErr('Customer not saved. Check customer insert policy.');
+  }
+}
 }
 function rCustomers(f){
   if(f!==undefined)_cF=f.toLowerCase();
