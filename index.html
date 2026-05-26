@@ -2601,7 +2601,7 @@ function saveCust(){
     phone: _newCust.phone,
     whatsapp: _newCust.whatsapp || null,
     email: _newCust.email || null,
-    branch: _newCust.branch,
+    branch_name: _newCust.branch,
     notes: _newCust.notes || null,
     is_active: true,
     created_by: currentUser?.id || null
@@ -4071,7 +4071,7 @@ async function loadAllData() {
     ]);
 
     // Map to the shape the existing UI code expects
-    db.customers   = customers  || [];
+    db.customers   = (customers||[]).map(c => ({...c, branch: c.branch_name || c.branch || 'Awoshie'}));
     db.quotations  = (quotations||[]).map(mapQuotation);
     db.jobs        = (jobs||[]).map(mapJob);
     db.sales       = (sales||[]).map(mapSale);
