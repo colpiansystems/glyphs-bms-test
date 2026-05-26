@@ -2594,6 +2594,18 @@ function saveCust(){
   auditLog('customer',`Customer registered: ${n}`,`Phone: ${p} | Branch: ${_newCust.branch}`,n);
   saveDB();closeM('mCust');rCustomers();rDash();gsSync();
   ['cN','cP','cWA','cE','cNote'].forEach(x=>document.getElementById(x).value='');
+  // Sync to Supabase
+  sbUpsert('customers', {
+    id: _newCust.id,
+    name: _newCust.name,
+    phone: _newCust.phone,
+    whatsapp: _newCust.whatsapp || null,
+    email: _newCust.email || null,
+    branch: _newCust.branch,
+    notes: _newCust.notes || null,
+    is_active: true,
+    created_by: currentUser?.id || null
+  }).catch(e => console.warn('Customer sync failed:', e));
 }
 function rCustomers(f){
   if(f!==undefined)_cF=f.toLowerCase();
