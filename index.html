@@ -1330,10 +1330,10 @@ const KEY='glyphs_v6_1';
 //           (the service_role key lives ONLY in that function, never here)
 // ══════════════════════════════════════════════════════════════════════
 const SUPABASE_CONFIG = {
-  url:          'https://mcrutusyrprgvydxshxv.supabase.co',
-  anonKey:      'sb_publishable_qh7L17hupIRybDU4BHqnwQ_vX6UisiK',
-  pinAuthUrl:   'https://mcrutusyrprgvydxshxv.supabase.co/functions/v1/verify-pin',
-  addStaffUrl:  'https://mcrutusyrprgvydxshxv.supabase.co/functions/v1/add-staff'
+  url:          'https://YOUR_PROJECT.supabase.co',
+  anonKey:      'YOUR_SUPABASE_ANON_KEY',
+  pinAuthUrl:   'https://YOUR_PROJECT.supabase.co/functions/v1/verify-pin',
+  addStaffUrl:  'https://YOUR_PROJECT.supabase.co/functions/v1/add-staff'
 };
 
 // Auth state — populated after Edge Function PIN verification
@@ -1852,8 +1852,8 @@ async function doLogin() {
     // Call the Edge Function — name + PIN go over HTTPS, never logged
     const r = await fetch(SUPABASE_CONFIG.pinAuthUrl, {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json', 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` },
-      body:    JSON.stringify({ p_staff_name: nameInput, p_plain_pin: pinInput })
+      headers: { 'Content-Type': 'application/json', 'apikey': SB_KEY },
+      body:    JSON.stringify({ name: nameInput, pin: pinInput })
     });
 
     const data = await r.json();
@@ -2586,26 +2586,18 @@ function calcEVat(){const a=parseFloat(document.getElementById('eAm').value)||0,
 
 // ══ CUSTOMERS ══
 let _cF='';
-function saveCust(){
-  const n=document.getElementById('cN').value.trim(),p=document.getElementById('cP').value.trim();
+async function saveCust(){
+  const n=sanitise(document.getElementById('cN').value), p=sanitise(document.getElementById('cP').value);
   if(!n||!p)return toastErr('Name and primary phone are required.');
-  const _newCust={id:UID(),name:n,phone:p,whatsapp:document.getElementById('cWA').value.trim(),email:document.getElementById('cE').value.trim(),branch:document.getElementById('cB').value,notes:document.getElementById('cNote').value.trim()};
-  db.customers.push(_newCust);
-  auditLog('customer',`Customer registered: ${n}`,`Phone: ${p} | Branch: ${_newCust.branch}`,n);
-  saveDB();closeM('mCust');rCustomers();rDash();gsSync();
+  const row={name:n,phone:p,whatsapp:sanitise(document.getElementById('cWA').value),email:sanitise(document.getElementById('cE').value),branch_name:document.getElementById('cB').value,notes:sanitise(document.getElementById('cNote').value),is_active:true,created_by:currentUser?.id||null};
+  const saved=await sbInsert('customers',row);
+  if(!saved)return toastErr('Customer was not saved to Supabase. Check connection or policy.');
+  const c={id:saved.id,name:saved.name,phone:saved.phone||'',whatsapp:saved.whatsapp||'',email:saved.email||'',branch:saved.branch_name,notes:saved.notes||''};
+  db.customers.push(c);
+  auditLog('customer',`Customer registered: ${n}`,`Phone: ${p} | Branch: ${c.branch}`,n);
+  saveDB();closeM('mCust');rCustomers();rDash();
   ['cN','cP','cWA','cE','cNote'].forEach(x=>document.getElementById(x).value='');
-  // Sync to Supabase
-  sbUpsert('customers', {
-    id: _newCust.id,
-    name: _newCust.name,
-    phone: _newCust.phone,
-    whatsapp: _newCust.whatsapp || null,
-    email: _newCust.email || null,
-    branch_name: _newCust.branch,
-    notes: _newCust.notes || null,
-    is_active: true,
-    created_by: currentUser?.id || null
-  }).catch(e => console.warn('Customer sync failed:', e));
+  toastOk('Customer saved to Supabase.');
 }
 function rCustomers(f){
   if(f!==undefined)_cF=f.toLowerCase();
@@ -2630,12 +2622,13 @@ function rCustomers(f){
 }
 async function delCust(id){
   const c=db.customers.find(x=>x.id===id);
-  const ok=await showConfirm('Delete Customer',`Delete '${c?.name}'? This cannot be undone.`,'Delete','btn-err');
+  const ok=await showConfirm('Delete Customer',`Delete '${c?.name}'? This will archive the customer in Supabase.`,'Delete','btn-err');
   if(!ok)return;
-  auditLog('customer',`Customer DELETED: ${c?.name||id}`,`Phone: ${c?.phone||'—'} | Branch: ${c?.branch||'—'}`);
+  const saved=await sbUpdate('customers',id,{is_active:false});
+  if(!saved)return toastErr('Could not archive customer in Supabase.');
+  auditLog('customer',`Customer archived: ${c?.name||id}`,`Phone: ${c?.phone||'—'} | Branch: ${c?.branch||'—'}`);
   db.customers=db.customers.filter(x=>x.id!==id);
-  saveDB();rCustomers();
-  toastOk(`Customer '${c?.name}' deleted.`);
+  saveDB();rCustomers();toastOk(`Customer '${c?.name}' archived.`);
 }
 function editCust(id){
   const c=db.customers.find(x=>x.id===id);if(!c)return;
@@ -2648,53 +2641,41 @@ function editCust(id){
   document.getElementById('ecNote').value=c.notes||'';
   openM('mCustEdit');
 }
-function saveCustEdit(){
+async function saveCustEdit(){
   const id=document.getElementById('ecId').value;
   const c=db.customers.find(x=>x.id===id);if(!c)return;
-  const n=document.getElementById('ecN').value.trim(),p=document.getElementById('ecP').value.trim();
+  const n=sanitise(document.getElementById('ecN').value),p=sanitise(document.getElementById('ecP').value);
   if(!n||!p)return toastErr('Name and phone required.');
-  c.name=n;c.phone=p;c.whatsapp=document.getElementById('ecWA').value.trim();c.email=document.getElementById('ecE').value.trim();
-  c.branch=document.getElementById('ecB').value;c.notes=document.getElementById('ecNote').value.trim();
+  const row={name:n,phone:p,whatsapp:sanitise(document.getElementById('ecWA').value),email:sanitise(document.getElementById('ecE').value),branch_name:document.getElementById('ecB').value,notes:sanitise(document.getElementById('ecNote').value)};
+  const ok=await sbUpdate('customers',id,row);
+  if(!ok)return toastErr('Customer update failed in Supabase.');
+  c.name=n;c.phone=p;c.whatsapp=row.whatsapp;c.email=row.email;c.branch=row.branch_name;c.notes=row.notes;
   auditLog('customer',`Customer updated: ${c.name}`,`Phone: ${c.phone} | Branch: ${c.branch}`,c.name);
-  saveDB();closeM('mCustEdit');rCustomers();rDash();gsSync();
+  saveDB();closeM('mCustEdit');rCustomers();rDash();toastOk('Customer updated in Supabase.');
 }
 
 // ══ QUOTATIONS ══
 let _qF={search:'',status:''};
-function saveQuote(){
-  const cl=document.getElementById('qCl').value.trim();
+async function saveQuote(){
+  const cl=sanitise(document.getElementById('qCl').value);
   if(!cl)return toastErr('Client name is required.');
   const lines=getQuoteLineData();
   if(!lines.length)return toastErr('Please add at least one item to the quotation.');
-  const emptyLine=lines.find(l=>!l.desc||!l.unitPrice);
-  if(emptyLine)return toastErr('Please fill in description and price for all items.');
-  const grandSub=R2(lines.reduce((s,l)=>s+l.subtotal,0));
+  if(lines.find(l=>!l.desc||!l.unitPrice))return toastErr('Please fill in description and price for all items.');
+  const grandSub=R2(lines.reduce((sum,l)=>sum+l.subtotal,0));
   const v=calcVAT(grandSub);
-  const quoteNo='QT-'+PAD(db.quoteCtr++);
-  db.quotations.push({
-    id:UID(),
-    quoteNo,
-    date:TODAY(),
-    client:cl,
-    phone:document.getElementById('qPh').value.trim(),
-    whatsapp:document.getElementById('qWA').value.trim(),
-    // Store all line items
-    lines:lines.map(l=>({type:l.type,desc:l.desc,qty:l.qty,unitPrice:l.unitPrice,subtotal:l.subtotal,note:l.note})),
-    // Summary fields (for table display & backward compat)
-    type:lines.map(l=>l.type).join(', '),
-    desc:lines.map(l=>l.desc).join('; '),
-    qty:lines.reduce((s,l)=>s+l.qty,0),
-    unitPrice:lines.length===1?lines[0].unitPrice:0,
-    subtotal:grandSub,
-    vat:v.totalLevy,
-    total:v.total,
-    branch:document.getElementById('qBr').value,
-    validUntil:document.getElementById('qVd').value,
-    notes:document.getElementById('qNo').value.trim(),
-    status:'Draft',
-  });
-  auditLog('quotation',`Quotation created: ${quoteNo} for ${cl}`,`${lines.length} item(s) | Total: ${GHS(v.total)} | Branch: ${document.getElementById('qBr').value}`,quoteNo);
-  saveDB();closeM('mQuote');rQuotes();rDash();gsSync();toastOk(`Quotation ${quoteNo} created for ${cl}`);
+  const quoteNo=await nextRef('QT','QT-'+PAD(db.quoteCtr++));
+  const cust=findCustomerByName(cl);
+  const branch=document.getElementById('qBr').value;
+  const qrow={quote_no:quoteNo,customer_id:cust?.id||null,customer_name:cl,customer_phone:sanitise(document.getElementById('qPh').value),branch_name:branch,quote_date:TODAY(),valid_until:document.getElementById('qVd').value||null,status:'Draft',notes:sanitise(document.getElementById('qNo').value),subtotal:grandSub,vat_amount:v.vat,nhil_amount:v.nhil,getfund_amount:v.getf,total:v.total,amount_paid:0,prepared_by_id:currentUser?.id||null,prepared_by:currentUser?.name||''};
+  const saved=await sbInsert('quotations',qrow);
+  if(!saved)return toastErr('Quotation was not saved to Supabase.');
+  const itemRows=lines.map((l,i)=>({quotation_id:saved.id,line_number:i+1,description:l.desc,service_type:l.type,qty:l.qty,unit_price:l.unitPrice,media:l.media||null,finishing:l.finishing||l.note||null,sort_order:i}));
+  await sbInsertMany('quotation_items',itemRows);
+  const q={id:saved.id,quoteNo,date:TODAY(),client:cl,phone:qrow.customer_phone,whatsapp:sanitise(document.getElementById('qWA').value),lines:lines.map(l=>({type:l.type,desc:l.desc,qty:l.qty,unitPrice:l.unitPrice,subtotal:l.subtotal,note:l.note,media:l.media,finishing:l.finishing})),type:lines.map(l=>l.type).join(', '),desc:lines.map(l=>l.desc).join('; '),qty:lines.reduce((sum,l)=>sum+l.qty,0),unitPrice:lines.length===1?lines[0].unitPrice:0,subtotal:grandSub,vat:v.totalLevy,total:v.total,branch,validUntil:qrow.valid_until,notes:qrow.notes,status:'Draft',amountPaid:0,payments:[]};
+  db.quotations.push(q);
+  auditLog('quotation',`Quotation created: ${quoteNo} for ${cl}`,`${lines.length} item(s) | Total: ${GHS(v.total)} | Branch: ${branch}`,quoteNo);
+  saveDB();closeM('mQuote');rQuotes();rDash();toastOk(`Quotation ${quoteNo} saved.`);
   ['qCl','qPh','qWA','qNo'].forEach(x=>document.getElementById(x).value='');
 }
 function rQuotes(f,_,st){
@@ -2797,73 +2778,41 @@ function convertToJob(id){
   openConvertModal(id);
 }
 
-function applyConvertToJob(){
+async function applyConvertToJob(){
   const id=document.getElementById('convQuoteId').value;
   const q=db.quotations.find(x=>x.id===id);
   if(!q)return;
-
-  // Guard: block if already converted
-  if(q.status==='Converted'){
-    toastErr(`${q.quoteNo} has already been converted to a job order.`);
-    closeM('mConvertJob');return;
-  }
+  if(q.status==='Converted'){toastErr(`${q.quoteNo} has already been converted to a job order.`);closeM('mConvertJob');return;}
   const preparedBy=document.getElementById('convPreparedBy').value;
+  const preparedStaff=findStaffByName(preparedBy);
   const dueDate=document.getElementById('convDueDate').value;
   const v=calcVAT(q.subtotal);
-  const orderNo='GC-'+PAD(db.jobCtr++);
+  const orderNo=await nextRef('ORD','ORD-'+PAD(db.jobCtr++));
   const quoteLines=q.lines&&q.lines.length?q.lines:[{type:q.type,desc:q.desc,qty:q.qty,unitPrice:q.unitPrice,subtotal:q.subtotal,note:''}];
-
-  // Validate all staff are assigned
   for(let i=0;i<quoteLines.length;i++){
     const staff=document.getElementById(`conv_staff_${i}`)?.value;
     if(!staff){toastErr(`Please assign a production staff member to Item ${i+1}.`);return;}
   }
-
-  quoteLines.forEach((l,i)=>{
+  const created=[];
+  for(let i=0;i<quoteLines.length;i++){
+    const l=quoteLines[i];
     const isOnly=quoteLines.length===1;
-    const lv=isOnly?v:calcVAT(l.subtotal);
+    const jobNo=await nextRef('JO',isOnly?orderNo:`${orderNo}-${i+1}`);
     const assignedTo=document.getElementById(`conv_staff_${i}`)?.value||'';
+    const assignedStaff=findStaffByName(assignedTo);
     const deadline=document.getElementById(`conv_deadline_${i}`)?.value?.trim()||'';
     const itemNotes=document.getElementById(`conv_notes_${i}`)?.value?.trim()||l.note||'';
-    const finishing=document.getElementById(`conv_finish_${i}`)?.value||'SPACE';
-
-    db.jobs.push({
-      id:UID(),
-      jobNo:isOnly?orderNo:`${orderNo}-${i+1}`,
-      orderNo,
-      date:TODAY(),
-      client:q.client,
-      phone:q.phone,
-      type:l.type,
-      desc:l.desc,
-      qty:l.qty,
-      unitPrice:l.unitPrice,
-      subtotal:l.subtotal,
-      vat:isOnly?lv.totalLevy:(i===0?v.totalLevy:0),
-      total:isOnly?lv.total:l.subtotal,
-      finishing,
-      assignedTo,
-      preparedBy,
-      branch:q.branch,
-      dueDate,
-      deadline,
-      notes:`From ${q.quoteNo}${itemNotes?' — '+itemNotes:''}`,
-      status:'Pending',
-      paid:false,
-      amountPaid:0,
-      payments:[],
-      isLineItem:!isOnly,
-      lineIndex:i+1,
-      totalLines:quoteLines.length,
-      isOrderHeader:!isOnly&&i===0,
-      statusLog:[{status:'Pending',ts:new Date().toISOString(),by:preparedBy}],
-    });
-  });
-  db.sales.push({id:UID(),ref:'SL-'+PAD(db.saleCtr++),date:TODAY(),customer:q.client,serviceType:quoteLines.map(l=>l.type).join(', '),branch:q.branch,subtotal:q.subtotal,vat:v.totalLevy,credit:v.total,payment:'Credit',desc:quoteLines.map(l=>l.desc).join('; ')+' (from '+q.quoteNo+')'});
+    const finishing=document.getElementById(`conv_finish_${i}`)?.value||l.finishing||'SPACE';
+    const row={job_no:jobNo,order_no:orderNo,quotation_id:q.id,customer_id:findCustomerByName(q.client)?.id||null,customer_name:q.client,customer_phone:q.phone||'',branch_name:q.branch,job_date:TODAY(),due_date:dueDate||null,service_type:l.type,description:l.desc,qty:l.qty,unit_price:l.unitPrice,media:l.media||null,finishing,status:'Pending',payment_status:'Unpaid',amount_paid:0,assigned_to_id:assignedStaff?.id||null,assigned_to:assignedTo,prepared_by_id:preparedStaff?.id||currentUser?.id||null,prepared_by:preparedBy,notes:`From ${q.quoteNo}${itemNotes?' — '+itemNotes:''}${deadline?' | Deadline: '+deadline:''}`,is_order_header:i===0,line_index:i,created_by_id:currentUser?.id||null};
+    const saved=await sbInsert('jobs',row);
+    if(!saved)return toastErr('Job order was not saved to Supabase.');
+    created.push({id:saved.id,jobNo,orderNo,date:TODAY(),client:q.client,phone:q.phone,type:l.type,desc:l.desc,qty:l.qty,unitPrice:l.unitPrice,subtotal:l.subtotal,vat:i===0?v.totalLevy:0,total:i===0?v.total:l.subtotal,finishing,assignedTo,preparedBy,branch:q.branch,dueDate,deadline,notes:row.notes,status:'Pending',paid:false,paymentStatus:'Unpaid',amountPaid:0,payments:[],isLineItem:!isOnly,lineIndex:i+1,totalLines:quoteLines.length,isOrderHeader:i===0,statusLog:[{status:'Pending',ts:new Date().toISOString(),by:preparedBy}]});
+  }
+  db.jobs.push(...created);
+  await sbUpdate('quotations',q.id,{status:'Converted',converted_to_job_id:created[0]?.id||null});
   q.status='Converted';
-  auditLog('job',`Job Order created from ${q.quoteNo}`,`Order: ${orderNo} | Client: ${q.client} | Items: ${quoteLines.length} | Total: ${GHS(v.total)} | Staff: ${quoteLines.map((_,i)=>document.getElementById('conv_staff_'+i)?.value).join(', ')}`,orderNo);
-  saveDB();closeM('mConvertJob');rQuotes();rJobs({});rDash();gsSync();
-  toastOk(`Job Order${quoteLines.length>1?'s ('+quoteLines.length+')':''} created: ${orderNo}`);
+  auditLog('job',`Job Order created from ${q.quoteNo}`,`Order: ${orderNo} | Client: ${q.client} | Items: ${quoteLines.length} | Total: ${GHS(v.total)}`,orderNo);
+  saveDB();closeM('mConvertJob');rQuotes();rJobs({});rDash();toastOk(`Job Order${quoteLines.length>1?'s ('+quoteLines.length+')':''} created: ${orderNo}`);
 }
 
 function updateQuoteStatus(id){
@@ -3055,21 +3004,22 @@ function openStat(id,st,client,phone){
   };
   openM('mStatus');
 }
-function applyStatus(){
-  const id=document.getElementById('statJobId').value,st=document.getElementById('newStat').value;
-  const j=db.jobs.find(x=>x.id===id);if(j){
-    const old=j.status;j.status=st;
-    if(st==='Completed')j.paid=true;
-    if(!j.statusLog)j.statusLog=[];
-    j.statusLog.push({status:st,ts:new Date().toISOString(),by:currentUser?.name||'',from:old});
-    logActivity('status',`${j.jobNo} ${j.client}: ${old} → ${st}`);
-    saveDB();
-  }
-  closeM('mStatus');rJobs({});rQuotes();rDash();
-  // Refresh production board if visible
-  const prodPanel=document.getElementById('panel-production');
-  if(prodPanel&&prodPanel.classList.contains('on'))rProduction();
-  gsSync();
+async function applyStatus(){
+  const id=document.getElementById('statJobId').value, st=document.getElementById('newStat').value;
+  const j=db.jobs.find(x=>x.id===id); if(!j)return;
+  const old=j.status;
+  const row={status:st};
+  if(st==='Completed') row.payment_status = j.paymentStatus || (j.paid?'Paid':'Unpaid');
+  const ok=await sbUpdate('jobs',id,row);
+  if(!ok)return toastErr('Status was not saved to Supabase.');
+  await sbInsert('job_status_history',{job_id:id,from_status:old,to_status:st,changed_by_id:currentUser?.id||null,changed_by:currentUser?.name||'',notes:null});
+  j.status=st; if(st==='Completed')j.paid=true;
+  if(!j.statusLog)j.statusLog=[];
+  j.statusLog.push({status:st,ts:new Date().toISOString(),by:currentUser?.name||'',from:old});
+  logActivity('status',`${j.jobNo} ${j.client}: ${old} → ${st}`);
+  saveDB();closeM('mStatus');rJobs({});rQuotes();rDash();
+  if(document.getElementById('panel-production')?.classList.contains('on'))rProduction();
+  toastOk('Job status saved to Supabase.');
 }
 
 function openReassign(jobId,currentAssignee,client,jobNo){
@@ -3080,11 +3030,19 @@ function openReassign(jobId,currentAssignee,client,jobNo){
   document.getElementById('reassignStaff').innerHTML=prodStaff.map(s=>`<option${s.name===currentAssignee?' selected':''}>${s.name}</option>`).join('');
   openM('mReassign');
 }
-function applyReassign(){
+async function applyReassign(){
   const id=document.getElementById('reassignJobId').value;
   const newStaff=document.getElementById('reassignStaff').value;
   const j=db.jobs.find(x=>x.id===id);
-  if(j&&newStaff){j.assignedTo=newStaff;logActivity('status',`${j.jobNo} re-assigned to ${newStaff}`);saveDB();closeM('mReassign');rJobs({});rQuotes();rDash();if(document.getElementById('panel-production')?.classList.contains('on'))rProduction();gsSync();toastOk(`Job re-assigned to ${newStaff}.`);}
+  if(!j||!newStaff)return;
+  const staff=findStaffByName(newStaff);
+  const ok=await sbUpdate('jobs',id,{assigned_to:newStaff,assigned_to_id:staff?.id||null});
+  if(!ok)return toastErr('Re-assignment was not saved to Supabase.');
+  j.assignedTo=newStaff;
+  logActivity('status',`${j.jobNo} re-assigned to ${newStaff}`);
+  saveDB();closeM('mReassign');rJobs({});rQuotes();rDash();
+  if(document.getElementById('panel-production')?.classList.contains('on'))rProduction();
+  toastOk(`Job re-assigned to ${newStaff}.`);
 }
 
 // ══ INVOICE ══
@@ -3282,54 +3240,14 @@ Total: ${GHS(inv.total)}`,
 }
 async function applyFullPaid(){
   const method=document.getElementById('fullPayMethod').value;
-  // Restore invoice context from hidden fields set by openMFullPay
-  const _mj=document.getElementById('_markPaidInvJobId').value;
-  const _mo=document.getElementById('_markPaidInvOrderNo').value;
-  const _mq=document.getElementById('_markPaidInvQuoteId').value;
-  if(_mj)document.getElementById('_invJobId').value=_mj;
-  if(_mo)document.getElementById('_invOrderNo').value=_mo;
-  if(_mq)document.getElementById('_invQuoteId').value=_mq;
-  const inv=resolveInvoiceTarget();
-  if(!inv){toastErr('Invoice not found.');return;}
-  const ref=inv.isQuote?inv.quote.quoteNo:(inv.firstJob?.orderNo||inv.firstJob?.jobNo||'');
-  if(inv.isQuote){
-    inv.quote.paid=true;
-    inv.quote.amountPaid=inv.total;
-    if(!inv.quote.payments)inv.quote.payments=[];
-    inv.quote.payments.push({amount:inv.total,date:TODAY(),by:currentUser?.name||'',method});
-  } else {
-    inv.jobs.forEach(j=>{
-      j.paid=true;
-      j.amountPaid=j.subtotal||j.total||0;
-      // Only auto-complete if job is at a late enough stage
-      if(['Ready for Pickup','Quality Check','Completed'].includes(j.status)){
-        j.status='Completed';
-        if(!j.statusLog)j.statusLog=[];
-        j.statusLog.push({status:'Completed',ts:new Date().toISOString(),by:currentUser?.name||''});
-      }
-      // Jobs still in Pending/In Production: stay at current stage
-      // Production staff will move to Completed when physically done
-    });
-    inv.firstJob.amountPaid=inv.total;
-    if(!inv.firstJob.payments)inv.firstJob.payments=[];
-    inv.firstJob.payments.push({amount:inv.total,date:TODAY(),by:currentUser?.name||'',method});
-  }
-  // Use VAT-adjusted amount stored by openMFullPay
-  const _totalEl=document.getElementById('fullPayTotal');
-  const _payAmt=(_totalEl?.dataset?.amount&&parseFloat(_totalEl.dataset.amount)>0)?parseFloat(_totalEl.dataset.amount):inv.total;
-  // Correct the saved amountPaid to match displayed amount
-  if(inv.isQuote){
-    inv.quote.amountPaid=_payAmt;
-    if(inv.quote.payments?.length)inv.quote.payments[inv.quote.payments.length-1].amount=_payAmt;
-  } else {
-    inv.firstJob.amountPaid=_payAmt;
-    if(inv.firstJob.payments?.length)inv.firstJob.payments[inv.firstJob.payments.length-1].amount=_payAmt;
-  }
-  auditLog('finance',`Fully paid: ${ref}`,`Client: ${inv.client} | Amount: ${GHS(_payAmt)} | Method: ${method}`,ref);
-  saveDB();
-  closeM('mFullPay');closeM('mInvoice');
-  toastOk(`${GHS(_payAmt)} received via ${method} ✓`);
-  rJobs({});rDash();
+  const inv=resolveInvoiceTarget(); if(!inv){toastErr('Invoice not found.');return;}
+  const totalEl=document.getElementById('fullPayTotal');
+  const payAmt=(totalEl?.dataset?.amount&&parseFloat(totalEl.dataset.amount)>0)?parseFloat(totalEl.dataset.amount):inv.outstanding;
+  document.getElementById('partPayAmt').value=payAmt;
+  document.getElementById('partPayMethod').value=method;
+  closeM('mFullPay');
+  await applyPartPayment();
+  closeM('mInvoice');
 }
 
 function openMFullPay(){
@@ -3410,22 +3328,30 @@ function rProduction(){
 // ══ PETTY CASH ══
 let _pcF={tab:'all',branch:''};
 function pcTab(t,el){_pcF.tab=t;document.querySelectorAll('#panel-pettycash .tab').forEach(x=>x.classList.remove('on'));if(el)el.classList.add('on');rPC({});}
-function savePC(){
-  const am=parseFloat(document.getElementById('pcAm').value)||0,pu=document.getElementById('pcPu').value.trim();
+async function savePC(){
+  const am=parseFloat(document.getElementById('pcAm').value)||0, pu=sanitise(document.getElementById('pcPu').value);
   if(!am||!pu)return toastErr('Amount and purpose required.');
-  if(am>5000)return toastErr('Amount cannot exceed GHS 5,000.00 per request.it.');
-  if(am<=0)return toastErr('Amount must be greater than zero.');const _newpc={id:UID(),date:TODAY(),requestedBy:document.getElementById('pcBy').value,branch:document.getElementById('pcBr').value,category:document.getElementById('pcCatI').value,purpose:pu,amount:am,status:'Pending',approvedBy:''};db.pettyCash.push(_newpc);logActivity('petty',`PC request GHS${am} by ${_newpc.requestedBy}`);saveDB();closeM('mPC');rPC({});rDash();gsSync();}
-function approvePC(id,action){
+  if(am>5000)return toastErr('Amount cannot exceed GHS 5,000.00 per request.');
+  if(am<=0)return toastErr('Amount must be greater than zero.');
+  const requestedBy=document.getElementById('pcBy').value, branch=document.getElementById('pcBr').value;
+  const staff=findStaffByName(requestedBy);
+  const row={request_date:TODAY(),requested_by_id:staff?.id||currentUser?.id||null,requested_by:requestedBy,branch_name:branch,category:document.getElementById('pcCatI').value,purpose:pu,amount:am,status:'Pending'};
+  const saved=await sbInsert('petty_cash',row);
+  if(!saved)return toastErr('Petty cash request was not saved to Supabase.');
+  db.pettyCash.push({id:saved.id,date:TODAY(),requestedBy,branch,category:row.category,purpose:pu,amount:am,status:'Pending',approvedBy:''});
+  logActivity('pettycash',`PC request ${GHS(am)} by ${requestedBy}`,pu,saved.id);
+  saveDB();closeM('mPC');rPC({});rDash();toastOk('Petty cash request saved.');
+}
+async function approvePC(id,action){
   if(!canAccess(['ceo','manager','finance_officer','sysadmin']))
     return toastErr('Access denied: only Manager or Finance Officer can approve petty cash.');
-  const p=db.pettyCash.find(x=>x.id===id);
-  if(p){
-    p.status=action;
-    p.approvedBy=currentUser?.name||'Manager';
-    p.actionTs=new Date().toISOString();
-    auditLog('pettycash',`Petty cash ${action}: ${GHS(p.amount)}`,`Requested by: ${p.requestedBy} | Purpose: ${p.purpose} | Branch: ${p.branch} | ${action} by: ${currentUser?.name}`);
-    saveDB();rPC({});rDash();gsSync();
-  }
+  const p=db.pettyCash.find(x=>x.id===id); if(!p)return;
+  const row={status:action,approved_by_id:currentUser?.id||null,approved_by:currentUser?.name||'Manager',approved_at:new Date().toISOString()};
+  const ok=await sbUpdate('petty_cash',id,row);
+  if(!ok)return toastErr('Approval was not saved to Supabase.');
+  p.status=action;p.approvedBy=row.approved_by;p.actionTs=row.approved_at;
+  auditLog('pettycash',`Petty cash ${action}: ${GHS(p.amount)}`,`Requested by: ${p.requestedBy} | Purpose: ${p.purpose} | Branch: ${p.branch} | ${action} by: ${currentUser?.name}`);
+  saveDB();rPC({});rDash();toastOk(`Petty cash ${action.toLowerCase()}.`);
 }
 function rPC(f={}){
   if(f.branch!==undefined)_pcF.branch=f.branch;
@@ -3462,8 +3388,29 @@ function rPC(f={}){
 
 // ══ LEDGER ══
 function ledTab(t,el){['lSales','lExp','lAssets','lVat'].forEach(x=>document.getElementById(x).style.display='none');const map={sales:'lSales',expenses:'lExp',assets:'lAssets',vat:'lVat'};document.getElementById(map[t]||'lSales').style.display='';document.querySelectorAll('#panel-ledger .tab').forEach(x=>x.classList.remove('on'));if(el)el.classList.add('on');if(t==='vat')renderVATSummary();}
-function saveSale(){if(!canAccess(['ceo','manager','finance_officer','cso']))return toastErr('Access denied: finance operations require Finance Officer or above.');const am=parseFloat(document.getElementById('sAm').value)||0;if(!am)return toastErr('Amount required.');const v=calcVAT(am);db.sales.push({id:UID(),ref:'SL-'+PAD(db.saleCtr++),date:document.getElementById('sD').value,customer:document.getElementById('sCu').value,serviceType:document.getElementById('sSv').value,branch:document.getElementById('sBr').value,subtotal:am,vat:v.totalLevy,credit:v.total,payment:document.getElementById('sPm').value,desc:document.getElementById('sDe').value});auditLog('finance',`Manual sale recorded`,`Customer: ${document.getElementById('sCu').value||'Walk-in'} | Amount: ${GHS(v.total)} | Branch: ${document.getElementById('sBr').value}`);saveDB();closeM('mSale');rLedger();rDash();gsSync();}
-function saveExp(){if(!canAccess(['ceo','manager','finance_officer']))return toastErr('Access denied: expenses require Finance Officer or above.');const am=parseFloat(document.getElementById('eAm').value)||0;if(!am)return toastErr('Amount required.');const claim=document.getElementById('eVatClaim').value==='1';const v=claim?calcVAT(am):{totalLevy:0,total:am};db.expenses.push({id:UID(),ref:'EX-'+PAD(db.expCtr++),date:document.getElementById('eD').value,category:document.getElementById('eCat').value,vendor:document.getElementById('eVe').value,branch:document.getElementById('eBr').value,subtotal:am,vatInput:v.totalLevy||0,debit:v.total,payment:document.getElementById('ePm').value,desc:document.getElementById('eDe').value,vatClaim:claim?1:0});auditLog('finance',`Expense recorded: ${document.getElementById('eCat').value}`,`Vendor: ${document.getElementById('eVe').value||'—'} | Amount: ${GHS(parseFloat(document.getElementById('eAm').value)||0)} | Branch: ${document.getElementById('eBr').value}`);saveDB();closeM('mExp');rLedger();rDash();gsSync();}
+async function saveSale(){
+  if(!canAccess(['ceo','manager','finance_officer','cso']))return toastErr('Access denied: finance operations require Finance Officer or above.');
+  const am=parseFloat(document.getElementById('sAm').value)||0;if(!am)return toastErr('Amount required.');
+  const v=calcVAT(am), ref=await nextRef('SL','SL-'+PAD(db.saleCtr++));
+  const row={ref,sale_date:document.getElementById('sD').value||TODAY(),customer_name:sanitise(document.getElementById('sCu').value),service_type:document.getElementById('sSv').value,branch_name:document.getElementById('sBr').value,subtotal:am,vat_amount:v.vat,nhil_amount:v.nhil,getfund_amount:v.getf,total:v.total,payment_method:document.getElementById('sPm').value,description:sanitise(document.getElementById('sDe').value),recorded_by_id:currentUser?.id||null,recorded_by:currentUser?.name||''};
+  const saved=await sbInsert('sales',row);
+  if(!saved)return toastErr('Sale was not saved to Supabase.');
+  db.sales.push({id:saved.id,ref,date:row.sale_date,customer:row.customer_name,serviceType:row.service_type,branch:row.branch_name,subtotal:am,vat:v.totalLevy,credit:v.total,payment:row.payment_method,desc:row.description});
+  auditLog('finance',`Manual sale recorded`,`Customer: ${row.customer_name||'Walk-in'} | Amount: ${GHS(v.total)} | Branch: ${row.branch_name}`,ref);
+  saveDB();closeM('mSale');rLedger();rDash();toastOk('Sale saved to Supabase.');
+}
+async function saveExp(){
+  if(!canAccess(['ceo','manager','finance_officer']))return toastErr('Access denied: expenses require Finance Officer or above.');
+  const am=parseFloat(document.getElementById('eAm').value)||0;if(!am)return toastErr('Amount required.');
+  const claim=document.getElementById('eVatClaim').value==='1';const v=claim?calcVAT(am):{vat:0,nhil:0,getf:0,totalLevy:0,total:am};
+  const ref=await nextRef('EXP','EX-'+PAD(db.expCtr++));
+  const row={ref,expense_date:document.getElementById('eD').value||TODAY(),category:document.getElementById('eCat').value,vendor:sanitise(document.getElementById('eVe').value),branch_name:document.getElementById('eBr').value,subtotal:am,vat_input:v.totalLevy||0,total:v.total,payment_method:document.getElementById('ePm').value,description:sanitise(document.getElementById('eDe').value),vat_claim:claim,recorded_by_id:currentUser?.id||null,recorded_by:currentUser?.name||''};
+  const saved=await sbInsert('expenses',row);
+  if(!saved)return toastErr('Expense was not saved to Supabase.');
+  db.expenses.push({id:saved.id,ref,date:row.expense_date,category:row.category,vendor:row.vendor,branch:row.branch_name,subtotal:am,vatInput:row.vat_input,debit:row.total,payment:row.payment_method,desc:row.description,vatClaim:claim?1:0});
+  auditLog('finance',`Expense recorded: ${row.category}`,`Vendor: ${row.vendor||'—'} | Amount: ${GHS(am)} | Branch: ${row.branch_name}`,ref);
+  saveDB();closeM('mExp');rLedger();rDash();toastOk('Expense saved to Supabase.');
+}
 function saveAsset(){const am=parseFloat(document.getElementById('aVa').value)||0,it=document.getElementById('aIt').value.trim();if(!it||!am)return toastErr('Item and value required.');db.assets.push({id:UID(),date:document.getElementById('aD').value,type:document.getElementById('aTy').value,category:document.getElementById('aCat').value,item:it,value:am,notes:document.getElementById('aNo').value});auditLog('finance',`Asset/Liability added: ${document.getElementById('aIt').value}`,`Type: ${document.getElementById('aTy').value} | Category: ${document.getElementById('aCat').value} | Value: ${GHS(parseFloat(document.getElementById('aVa').value)||0)}`);saveDB();closeM('mAsset');rLedger();rDash();gsSync();}
 function updAssetCats(){const t=document.getElementById('aTy').value;const c={Asset:['Cash & Bank','Accounts Receivable','Inventory','Equipment','Vehicles','Furniture','Prepayments'],Liability:['Bank Loan','Accounts Payable','VAT Payable','Accrued Expenses'],Equity:['Share Capital','Retained Earnings','Owner Drawings']};document.getElementById('aCat').innerHTML=(c[t]||c['Asset']).map(x=>`<option>${x}</option>`).join('');}
 function rLedger(){
@@ -3860,7 +3807,7 @@ async function saveStaff(){
     // Call the add-staff Edge Function — it owns all three creation steps
     const resp = await fetch(SUPABASE_CONFIG.addStaffUrl, {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json', 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` },
+      headers: { 'Content-Type': 'application/json', 'apikey': SB_KEY },
       body:    JSON.stringify({
         full_name:   n,
         role:        r,
@@ -4027,7 +3974,7 @@ async function testSupabase(){
   try{
     // Test by fetching branches table (public read, no auth required)
     const r=await fetch(`${SB_URL}/rest/v1/branches?select=name&limit=1`,{
-      headers:{'apikey':SB_KEY,'Content-Type':'application/json','Authorization':`Bearer ${SB_KEY}`}
+      headers:{'apikey':SB_KEY,'Content-Type':'application/json'}
     });
     if(r.ok){
       setPill('ok');
@@ -4058,10 +4005,11 @@ async function loadAllData() {
   const errMsg = document.getElementById('loadingMsg');
   try {
     // Parallel fetch of all tables the user has access to
-    const [customers, quotations, jobs, sales, expenses, pettyCash,
+    const [customers, quotations, quoteItems, jobs, sales, expenses, pettyCash,
            settings, serviceTypes] = await Promise.all([
       sbGet('customers?select=*&is_active=eq.true&order=name'),
       sbGet('quotations?select=*&order=created_at.desc&limit=500'),
+      sbGet('quotation_items?select=*&order=line_number'),
       sbGet('jobs?select=*&order=created_at.desc&limit=1000'),
       sbGet('sales?select=*&order=sale_date.desc&limit=500'),
       sbGet('expenses?select=*&order=expense_date.desc&limit=500'),
@@ -4071,8 +4019,8 @@ async function loadAllData() {
     ]);
 
     // Map to the shape the existing UI code expects
-    db.customers   = (customers||[]).map(c => ({...c, branch: c.branch_name || c.branch || 'Awoshie'}));
-    db.quotations  = (quotations||[]).map(mapQuotation);
+    db.customers   = customers  || [];
+    db.quotations  = (quotations||[]).map(q => { const mapped=mapQuotation(q); const items=(quoteItems||[]).filter(i=>i.quotation_id===q.id); mapped.lines=items.map(i=>({type:i.service_type,desc:i.description,qty:parseFloat(i.qty||0),unitPrice:parseFloat(i.unit_price||0),subtotal:parseFloat(i.subtotal||0),media:i.media,finishing:i.finishing,note:i.finishing||''})); if(mapped.lines.length){mapped.type=mapped.lines.map(l=>l.type).join(', '); mapped.desc=mapped.lines.map(l=>l.desc).join('; '); mapped.qty=mapped.lines.reduce((s,l)=>s+l.qty,0); mapped.unitPrice=mapped.lines.length===1?mapped.lines[0].unitPrice:0;} return mapped; });
     db.jobs        = (jobs||[]).map(mapJob);
     db.sales       = (sales||[]).map(mapSale);
     db.expenses    = (expenses||[]).map(mapExpense);
@@ -4165,6 +4113,43 @@ async function sbUpdate(table, id, data) {
     body: JSON.stringify(data)
   });
   return r.ok;
+}
+
+
+// Extra Supabase write helpers used by the production-ready module fixes
+async function sbPatchWhere(table, query, data){
+  if(!_sbSession) return false;
+  const r = await fetch(`${SB_URL}/rest/v1/${table}?${query}`, {
+    method:'PATCH',
+    headers: sbHeaders({'Prefer':'return=minimal'}),
+    body: JSON.stringify(data)
+  });
+  if(!r.ok) console.error(`sbPatchWhere ${table}:`, await r.text());
+  return r.ok;
+}
+async function sbInsertMany(table, rows){
+  if(!_sbSession || !rows || !rows.length) return [];
+  const r = await fetch(`${SB_URL}/rest/v1/${table}`, {
+    method:'POST',
+    headers: sbHeaders({'Prefer':'return=representation'}),
+    body: JSON.stringify(rows)
+  });
+  if(!r.ok){ console.error(`sbInsertMany ${table}:`, await r.text()); return []; }
+  return r.json();
+}
+async function nextRef(prefix, fallback){
+  try { return await sbRpc('next_ref', {p_prefix:prefix}); }
+  catch(e){ return fallback || `${prefix}-${PAD(Date.now()%10000)}`; }
+}
+function findCustomerByName(name){
+  return db.customers.find(c => (c.name||'').toLowerCase()===(name||'').toLowerCase());
+}
+function findStaffByName(name){
+  return db.staff.find(s => (s.name||'').toLowerCase()===(name||'').toLowerCase());
+}
+function refreshOperationalViews(){
+  rCustomers(); rQuotes(); rJobs({}); rLedger(); rPC({}); rDash();
+  if(document.getElementById('panel-production')?.classList.contains('on')) rProduction();
 }
 
 // ── Data shape mappers (DB → UI format) ─────────────────────────────────
@@ -4281,7 +4266,7 @@ async function refreshSession() {
   try {
     const r = await fetch(`${SB_URL}/auth/v1/token?grant_type=refresh_token`, {
       method:  'POST',
-      headers: {'apikey': SB_KEY, 'Content-Type': 'application/json', 'Authorization': `Bearer ${SB_KEY}`},
+      headers: {'apikey': SB_KEY, 'Content-Type': 'application/json'},
       body:    JSON.stringify({refresh_token: _sbSession.refresh_token})
     });
 
@@ -4826,107 +4811,44 @@ async function applyPartPayment(){
   const inv=resolveInvoiceTarget();
   if(!inv){toastErr('Invoice not found.');return;}
   if(amt>inv.outstanding+0.01){toastErr(`Amount exceeds outstanding balance of ${GHS(inv.outstanding)}.`);return;}
-  const newPaid=R2(inv.alreadyPaid+amt);
-  const newBalance=R2(inv.total-newPaid);
+  const newPaid=R2(inv.alreadyPaid+amt), newBalance=R2(inv.total-newPaid);
   const ref=inv.isQuote?inv.quote.quoteNo:(inv.firstJob?.orderNo||inv.firstJob?.jobNo||'');
-
+  const branch=inv.isQuote?inv.quote.branch:inv.firstJob.branch;
+  const paymentRef=await nextRef('PMT','PMT-'+PAD(Date.now()%10000));
+  const paymentRow={payment_ref:paymentRef,job_id:inv.isQuote?null:(inv.firstJob?.id||null),order_no:inv.isQuote?null:(inv.firstJob?.orderNo||null),quotation_id:inv.isQuote?inv.quote.id:null,customer_name:inv.client,branch_name:branch,payment_date:TODAY(),amount:amt,method,notes:`Payment on ${ref}`,received_by_id:currentUser?.id||null,received_by:currentUser?.name||''};
+  await sbInsert('payments',paymentRow);
   if(inv.isQuote){
-    // Payment on a quotation (deposit/advance)
-    inv.quote.amountPaid=newPaid;
-    if(!inv.quote.payments)inv.quote.payments=[];
-    inv.quote.payments.push({amount:amt,date:TODAY(),by:currentUser?.name||'',method});
-    if(newBalance<=0.01&&newPaid>=inv.total-0.01){inv.quote.paid=true;inv.quote.amountPaid=inv.total;}
-  } else {
-    // Payment on job order(s)
-    inv.firstJob.amountPaid=newPaid;
-    if(!inv.firstJob.payments)inv.firstJob.payments=[];
-    inv.firstJob.payments.push({amount:amt,date:TODAY(),by:currentUser?.name||'',method});
-    if(newBalance<=0.01&&newPaid>=inv.total-0.01){
-      inv.jobs.forEach(j=>{
-        j.paid=true;
-        j.paymentStatus='Paid';
-        j.amountPaid=j.subtotal||j.total||0;
-        if(['Ready for Pickup','Quality Check','Completed'].includes(j.status)){
-          j.status='Completed';
-          if(!j.statusLog)j.statusLog=[];
-          j.statusLog.push({status:'Completed',ts:new Date().toISOString(),by:currentUser?.name||''});
-        }
-        // Update in Supabase
-        sbUpdate('jobs', j.id, {payment_status:'Paid', amount_paid:j.amountPaid}).catch(()=>{});
-      });
-      inv.firstJob.amountPaid=inv.total;
-    }
+    await sbUpdate('quotations',inv.quote.id,{amount_paid:newPaid});
+    inv.quote.amountPaid=newPaid;if(!inv.quote.payments)inv.quote.payments=[];inv.quote.payments.push({amount:amt,date:TODAY(),by:currentUser?.name||'',method});
+  }else{
+    const status=newBalance<=0.01?'Paid':'Partial';
+    await sbPatchWhere('jobs',`order_no=eq.${encodeURIComponent(inv.firstJob.orderNo||inv.firstJob.jobNo)}`,{payment_status:status,amount_paid:newPaid});
+    inv.jobs.forEach(j=>{j.paymentStatus=status;j.amountPaid=j.isOrderHeader?newPaid:(status==='Paid'?(j.subtotal||0):0);if(status==='Paid')j.paid=true;});
+    inv.firstJob.amountPaid=newPaid;if(!inv.firstJob.payments)inv.firstJob.payments=[];inv.firstJob.payments.push({amount:amt,date:TODAY(),by:currentUser?.name||'',method});
   }
-  // ACCOUNTING: Create a sales ledger entry for this payment (revenue recognition)
-  const vatOnPayment = calcVAT(amt);
-  const saleProportionalSub = R2(amt / (inv.total > 0 ? (1 + totalLevy()/100) : 1));
-  try {
-    const saleRef = await sbRpc('next_ref', {p_prefix:'SL'}).catch(()=>'SL-'+PAD(db.saleCtr++));
-    const saleRow = {
-      ref: saleRef,
-      sale_date: TODAY(),
-      customer_name: inv.client,
-      service_type: inv.isQuote ? 'Quotation' : (inv.firstJob?.type || 'Print Services'),
-      branch_name: inv.isQuote ? inv.quote?.branch : inv.firstJob?.branch,
-      payment_id: null,  // set if payments table record exists
-      subtotal: saleProportionalSub,
-      vat_amount: R2(amt - saleProportionalSub),
-      total: amt,
-      payment_method: method,
-      description: `Payment on ${ref} — Balance: ${GHS(newBalance)}`,
-      recorded_by_id: currentUser?.id||null,
-      recorded_by: currentUser?.name||''
-    };
-    await sbInsert('sales', saleRow);
-    // Also push to local db.sales for immediate UI update
-    db.sales.push({
-      id:UID(), ref:saleRef, date:TODAY(),
-      customer:inv.client,
-      serviceType: saleRow.service_type,
-      branch: saleRow.branch_name,
-      subtotal: saleProportionalSub,
-      vat: R2(amt - saleProportionalSub),
-      credit: amt,
-      payment: method,
-      desc: saleRow.description
-    });
-  } catch(e) { console.warn('Sale record error:', e); }
-
-  auditLog('finance',`Payment received: ${ref}`,
-    `Client: ${inv.client} | Amount: ${GHS(amt)} via ${method} | Balance: ${GHS(newBalance)} | Sale recorded`,ref);
-  saveDB();closePartPayPanel();
-  if(newBalance<=0.01){
-    toastOk(`Payment of ${GHS(amt)} received — FULLY PAID ✓`);
-  } else {
-    toastOk(`Payment of ${GHS(amt)} recorded — Outstanding: ${GHS(newBalance)}`);
-  }
-  // Refresh invoice — always re-open using the header/first job so amountPaid shows
-  const quoteId=document.getElementById('_invQuoteId').value;
-  const jobId=document.getElementById('_invJobId').value;
-  const orderNo=document.getElementById('_invOrderNo').value;
-  if(quoteId){
-    const q=db.quotations.find(x=>x.id===quoteId);
-    if(q)showInvoiceModal(null,q);
-  } else {
-    // For multi-line orders find the header job (isOrderHeader or first in orderNo)
-    const headerJob=orderNo?
-      (db.jobs.find(j=>j.orderNo===orderNo&&j.isOrderHeader) || db.jobs.find(j=>j.orderNo===orderNo)):
-      db.jobs.find(j=>j.id===jobId);
-    if(headerJob)showInvoiceModal(headerJob.id);
-    else showInvoiceModal(jobId);
-  }
-  rJobs({});rDash();
+  const saleRef=await nextRef('SL','SL-'+PAD(db.saleCtr++));
+  const saleSub=R2(amt/(1+totalLevy()/100));
+  const saleVat=R2(amt-saleSub);
+  const saleRow={ref:saleRef,sale_date:TODAY(),customer_name:inv.client,service_type:inv.isQuote?'Quotation':(inv.firstJob?.type||'Print Services'),branch_name:branch,payment_id:null,job_id:inv.isQuote?null:(inv.firstJob?.id||null),subtotal:saleSub,vat_amount:saleVat,total:amt,payment_method:method,description:`Payment on ${ref} — Balance: ${GHS(newBalance)}`,recorded_by_id:currentUser?.id||null,recorded_by:currentUser?.name||''};
+  await sbInsert('sales',saleRow);
+  db.sales.push({id:UID(),ref:saleRef,date:TODAY(),customer:inv.client,serviceType:saleRow.service_type,branch,subtotal:saleSub,vat:saleVat,credit:amt,payment:method,desc:saleRow.description});
+  auditLog('finance',`Payment received: ${ref}`,`Client: ${inv.client} | Amount: ${GHS(amt)} via ${method} | Balance: ${GHS(newBalance)}`,ref);
+  saveDB();closePartPayPanel();toastOk(newBalance<=0.01?`Payment of ${GHS(amt)} received — FULLY PAID ✓`:`Payment of ${GHS(amt)} recorded — Outstanding: ${GHS(newBalance)}`);
+  if(inv.isQuote)showInvoiceModal(null,inv.quote); else showInvoiceModal(inv.firstJob.id);
+  rJobs({});rLedger();rDash();
 }
 
 // ── Small modal handlers ──
-function applyQStatus(){
+async function applyQStatus(){
   const id=document.getElementById('_qStatusId').value;
   const ns=document.getElementById('newQStatus').value;
   const q=db.quotations.find(x=>x.id===id);
   if(!q)return;
   if(q.status==='Converted'){toastErr('This quotation has already been converted to a job order and cannot be changed.');closeM('mQStatus');return;}
-  if(q.status==='Rejected'&&ns==='Converted'){toastErr('Set status to Approved first, then use → Assign & Convert.');closeM('mQStatus');return;}
-  if(q){q.status=ns;saveDB();closeM('mQStatus');rQuotes();rDash();gsSync();toastOk(`Quotation status updated to: ${ns}`);}
+  const ok=await sbUpdate('quotations',id,{status:ns});
+  if(!ok)return toastErr('Quotation status was not updated in Supabase.');
+  q.status=ns; auditLog('quotation',`Quotation status updated: ${q.quoteNo}`,`New status: ${ns}`,q.quoteNo);
+  saveDB();closeM('mQStatus');rQuotes();rDash();toastOk(`Quotation status updated to: ${ns}`);
 }
 function openEditStaff(id){
   const s=db.staff.find(x=>x.id===id);
@@ -5023,4 +4945,3 @@ document.getElementById('tbDate').textContent=new Date().toLocaleDateString('en-
 </script>
 </body>
 </html>
-
