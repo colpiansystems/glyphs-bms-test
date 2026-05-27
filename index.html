@@ -3947,7 +3947,7 @@ function sbHeaders(extraHeaders={}) {
     'Prefer': 'return=representation',
     ...extraHeaders
   };
-  if (_sbSession?.access_token) h.Authorization = `Bearer ${_sbSession.access_token}`;
+  // Custom PIN auth uses Supabase publishable key only. Do not send invalid bearer tokens.
   return h;
 }
 
