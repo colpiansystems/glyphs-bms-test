@@ -366,7 +366,17 @@ hr{border:none;border-top:1px solid var(--border);margin:12px 0;}
 
 
 <!-- TOAST CONTAINER -->
-
+<div id="toastContainer"></div>
+<div id="confirmOverlay">
+  <div class="confirm-box">
+    <div id="confirmTitle" class="confirm-title">Confirm action</div>
+    <div id="confirmMsg" class="confirm-msg">Are you sure?</div>
+    <div class="confirm-btns">
+      <button class="btn btn-o" onclick="resolveConfirm(false)">Cancel</button>
+      <button id="confirmOk" class="btn btn-err" onclick="resolveConfirm(true)">Confirm</button>
+    </div>
+  </div>
+</div>
 
 <!-- ═══ SIDEBAR ═══ -->
 <nav id="sb">
@@ -1900,6 +1910,9 @@ async function doLogin() {
     };
     localStorage.setItem('_sb_session', JSON.stringify(_sbSession));
 
+    // Keep a concrete auth header cache for older helper code.
+    _sbHeaders = sbHeaders();
+
     // Set current user from the server-verified profile
     const profile = data.profile;
     currentUser = {
@@ -2587,37 +2600,50 @@ function calcEVat(){const a=parseFloat(document.getElementById('eAm').value)||0,
 // ══ CUSTOMERS ══
 let _cF='';
 async function saveCust(){
-  const n = sanitise(document.getElementById('cN').value);
-  const p = sanitise(document.getElementById('cP').value);
+  const n = sanitise(document.getElementById('cN')?.value || '');
+  const p = sanitise(document.getElementById('cP')?.value || '');
 
-  if(!n || !p) return toastErr('Name and primary phone are required.');
+  if(!n || !p){
+    toastErr('Name and primary phone are required.');
+    return;
+  }
 
   const row = {
     name: n,
     phone: p,
-    whatsapp: sanitise(document.getElementById('cWA').value),
-    email: sanitise(document.getElementById('cE').value),
-    branch_name: document.getElementById('cB').value,
-    notes: sanitise(document.getElementById('cNote').value),
+    whatsapp: sanitise(document.getElementById('cWA')?.value || ''),
+    email: sanitise(document.getElementById('cE')?.value || ''),
+    branch_name: document.getElementById('cB')?.value || currentUser?.branch || 'Awoshie',
+    notes: sanitise(document.getElementById('cNote')?.value || ''),
     is_active: true,
     created_by_id: currentUser?.id || null
   };
 
+  const btn = document.querySelector('#mCust .mf .btn-p');
+  const oldTxt = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Saving…'; }
+
   try{
-    const savedRows = await sbInsert('customers', row);
-    const saved = Array.isArray(savedRows) ? savedRows[0] : savedRows;
+    const saved = await sbInsert('customers', row);
+    if(!saved || !saved.id){
+      throw new Error('Customer was not saved to Supabase.');
+    }
 
-    db.customers.push({
+    const c = {
       id: saved.id,
-      name: saved.name,
-      phone: saved.phone,
-      whatsapp: saved.whatsapp || '',
-      email: saved.email || '',
-      branch: saved.branch_name,
-      notes: saved.notes || ''
-    });
+      name: saved.name || row.name,
+      phone: saved.phone || row.phone,
+      whatsapp: saved.whatsapp || row.whatsapp || '',
+      email: saved.email || row.email || '',
+      branch: saved.branch_name || row.branch_name,
+      notes: saved.notes || row.notes || ''
+    };
 
-    auditLog('customer', `Customer registered: ${n}`, `Phone: ${p} | Branch: ${row.branch_name}`, n);
+    const i = db.customers.findIndex(x => x.id === c.id);
+    if(i >= 0) db.customers[i] = c;
+    else db.customers.unshift(c);
+
+    auditLog('customer', `Customer registered: ${n}`, `Phone: ${p} | Branch: ${c.branch}`, n);
 
     saveDB();
     closeM('mCust');
@@ -2625,12 +2651,15 @@ async function saveCust(){
     rDash();
     toastOk('Customer saved successfully.');
 
-    ['cN','cP','cWA','cE','cNote'].forEach(x=>document.getElementById(x).value='');
+    ['cN','cP','cWA','cE','cNote'].forEach(x=>{ const el=document.getElementById(x); if(el) el.value=''; });
   }catch(e){
     console.error('saveCust error:', e);
-    toastErr('Customer not saved. Check customer insert policy.');
+    toastErr('Customer not saved. Please check login/session and customer insert policy.');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = oldTxt || 'Save Customer'; }
   }
 }
+
 function rCustomers(f){
   if(f!==undefined)_cF=f.toLowerCase();
   let rows=filterByBranch(db.customers);
@@ -3912,13 +3941,14 @@ const SB_URL = SUPABASE_CONFIG.url;
 const SB_KEY = SUPABASE_CONFIG.anonKey;
 
 function sbHeaders(extraHeaders={}) {
-  return {
+  const h = {
     'apikey': SB_KEY,
-    'Authorization': _sbSession ? `Bearer ${_sbSession.access_token}` : `Bearer ${SB_KEY}`,
     'Content-Type': 'application/json',
     'Prefer': 'return=representation',
     ...extraHeaders
   };
+  if (_sbSession?.access_token) h.Authorization = `Bearer ${_sbSession.access_token}`;
+  return h;
 }
 
 async function sbRpc(fn, params={}) {
@@ -3951,6 +3981,7 @@ async function initApp() {
       // Require at least 60 seconds of remaining validity
       if (s.access_token && s.expires_at && Date.now() / 1000 < s.expires_at - 60) {
         _sbSession = s;
+        _sbHeaders = sbHeaders();
         if (msg) msg.textContent = 'Loading your data…';
         const profile = await fetchCurrentProfile();
         if (profile) {
@@ -4125,15 +4156,19 @@ async function sbUpsert(table, data, conflictCol='id') {
 
 // Generic insert helper
 async function sbInsert(table, data) {
-  if (!_sbSession) return null;
+  if (!_sbSession?.access_token) throw new Error('Not signed in. Please sign out and sign in again.');
   const r = await fetch(`${SB_URL}/rest/v1/${table}`, {
     method: 'POST',
     headers: sbHeaders({'Prefer':'return=representation'}),
     body: JSON.stringify(data)
   });
-  if (!r.ok) { console.error(`sbInsert ${table}:`, await r.text()); return null; }
+  if (!r.ok) {
+    const txt = await r.text();
+    console.error(`sbInsert ${table}:`, txt);
+    throw new Error(txt || `Supabase insert failed with status ${r.status}`);
+  }
   const rows = await r.json();
-  return rows[0] || null;
+  return Array.isArray(rows) ? (rows[0] || null) : rows;
 }
 
 // Generic update helper
@@ -4735,7 +4770,12 @@ function exportAuditPDF(){
 
 // ── TOAST NOTIFICATIONS (replaces alert) ──
 function showToast(msg, type='info', duration=3500){
-  const c=document.getElementById('toastContainer');
+  let c=document.getElementById('toastContainer');
+  if(!c){
+    c=document.createElement('div');
+    c.id='toastContainer';
+    document.body.appendChild(c);
+  }
   const t=document.createElement('div');
   const icons={ok:'✓',err:'✗',info:'ℹ',warn:'⚠'};
   t.className=`toast toast-${type}`;
