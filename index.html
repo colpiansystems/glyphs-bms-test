@@ -1604,16 +1604,25 @@ function numToWords(n){
   return result+' Only';
 }
 
-// ── JOB UPDATE PERMISSION ──
-// Production staff can only update jobs assigned to them
-// CSO, Manager, CEO can update any job in their branch
+// ── JOB UPDATE / REASSIGNMENT PERMISSION ──
+// Production staff can only update jobs assigned to them.
+// CSO can reassign jobs they created/handle in their branch, before completion.
+// Manager/Admin can reassign any non-completed job.
 function canUpdateJob(job){
   if(!currentUser)return false;
-  const r=currentUser.role;
-  if(r==='production'){
-    return job.assignedTo===currentUser.name;
+  const r=normaliseRole(currentUser.role||'');
+  if(isProductionRole(r)){
+    return (job.assignedTo||'').toLowerCase()===(currentUser.name||'').toLowerCase();
   }
-  return true; // CSO, manager, ceo, finance_officer can all update
+  return true;
+}
+function canReassignJob(job){
+  if(!currentUser || !job)return false;
+  const r=normaliseRole(currentUser.role||'');
+  if(['Completed','Cancelled'].includes(job.status))return false;
+  if(['super','super_admin','sysadmin','manager','ceo','owner'].includes(r))return true;
+  if(r==='cso')return branchMatches(branchOf(job), myBranch());
+  return false;
 }
 
 // ── SMART REFRESH ──
@@ -3177,7 +3186,7 @@ function rJobs(f={}){
     <td>${sbadge(j.status)}</td>
     <td class="no-print" style="white-space:nowrap">
       <button class="btn btn-o btn-s" onclick="openStat('${j.id}','${j.status}','${j.client}','${j.phone||''}')">Update</button>
-      <button class="btn btn-warn btn-s" onclick="openReassign('${j.id}','${j.assignedTo}','${j.client}','${j.jobNo}')">Re-assign</button>
+      ${canReassignJob(j)?`<button class="btn btn-warn btn-s" onclick="openReassign('${j.id}','${j.assignedTo}','${j.client}','${j.jobNo}')">Re-assign</button>`:''}
       <button class="btn btn-info btn-s" onclick="showInvoiceModal('${j.id}')">Invoice</button>
     </td></tr>`).join(''):'<tr><td colspan="16" style="text-align:center;color:var(--faint);padding:28px">No jobs found.</td></tr>';
 }
@@ -3233,23 +3242,54 @@ async function applyStatus(){
 }
 
 function openReassign(jobId,currentAssignee,client,jobNo){
+  const job=db.jobs.find(j=>j.id===jobId);
+  if(!canReassignJob(job)){
+    toastErr('Only CSO/Manager/Admin can re-assign this job before completion.');
+    return;
+  }
   document.getElementById('reassignJobId').value=jobId;
-  document.getElementById('reassignJobInfo').textContent=`Job: ${jobNo} — ${client} | Currently: ${currentAssignee}`;
-  const b=myBranch()||(db.jobs.find(j=>j.id===jobId)?.branch)||'Awoshie';
-  const prodStaff=db.staff.filter(s=>isProductionRole(s.role)&&branchMatches(branchOf(s),b));
-  document.getElementById('reassignStaff').innerHTML=prodStaff.map(s=>`<option${s.name===currentAssignee?' selected':''}>${s.name}</option>`).join('');
+  document.getElementById('reassignJobInfo').textContent=`Job: ${jobNo} — ${client} | Currently: ${currentAssignee||'Unassigned'} | Branch: ${branchOf(job)}`;
+  const b=branchOf(job)||myBranch()||'Awoshie';
+  let prodStaff=(db.staff||[]).filter(s=>isProductionRole(s.role)&&branchMatches(branchOf(s),b));
+  if(!prodStaff.length) prodStaff=(db.staff||[]).filter(s=>isProductionRole(s.role));
+  const select=document.getElementById('reassignStaff');
+  if(!prodStaff.length){
+    select.innerHTML='<option value="">No production staff available</option>';
+  }else{
+    select.innerHTML=prodStaff.map(s=>`<option value="${s.name}" ${s.name===currentAssignee?'selected':''}>${s.name}</option>`).join('');
+  }
   openM('mReassign');
 }
 async function applyReassign(){
   const id=document.getElementById('reassignJobId').value;
   const newStaff=document.getElementById('reassignStaff').value;
   const j=db.jobs.find(x=>x.id===id);
-  if(!j||!newStaff)return;
+  if(!j)return;
+  if(!canReassignJob(j))return toastErr('You are not allowed to re-assign this job.');
+  if(!newStaff)return toastErr('Select a production staff member.');
+  const oldStaff=j.assignedTo||'';
+  if(oldStaff===newStaff)return toastErr('This job is already assigned to that staff member.');
   const staff=findStaffByName(newStaff);
-  const ok=await sbUpdate('jobs',id,{assigned_to:newStaff,assigned_to_id:staff?.id||null});
+  const row={assigned_to:newStaff,assigned_to_id:staff?.id||null};
+  const ok=await sbUpdate('jobs',id,row);
   if(!ok)return toastErr('Re-assignment was not saved to Supabase.');
+  // Keep an audit trail, but do not block the re-assignment if the history table policy is not ready.
+  try{
+    await sbInsert('job_status_history',{
+      job_id:id,
+      from_status:j.status,
+      to_status:j.status,
+      changed_by_id:currentUser?.id||null,
+      changed_by:currentUser?.name||'',
+      notes:`Re-assigned from ${oldStaff||'Unassigned'} to ${newStaff}`
+    });
+  }catch(e){console.warn('Reassignment history not saved:', e);}
   j.assignedTo=newStaff;
-  logActivity('status',`${j.jobNo} re-assigned to ${newStaff}`);
+  j.assigned_to=newStaff;
+  j.assigned_to_id=staff?.id||null;
+  if(!j.statusLog)j.statusLog=[];
+  j.statusLog.push({status:j.status,ts:new Date().toISOString(),by:currentUser?.name||'',note:`Re-assigned from ${oldStaff||'Unassigned'} to ${newStaff}`});
+  logActivity('status',`${j.jobNo} re-assigned from ${oldStaff||'Unassigned'} to ${newStaff}`);
   saveDB();closeM('mReassign');rJobs({});rQuotes();rDash();
   if(document.getElementById('panel-production')?.classList.contains('on'))rProduction();
   toastOk(`Job re-assigned to ${newStaff}.`);
