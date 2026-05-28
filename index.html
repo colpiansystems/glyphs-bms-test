@@ -3425,7 +3425,8 @@ function showInvoiceModal(jobId,quoteObj){
     (db.jobs.find(j=>j.orderNo===data.orderNo&&j.isOrderHeader) || db.jobs.find(j=>j.orderNo===data.orderNo)):
     null;
   const _paySource=_orderHeaderJob||data; // use header job for payment data
-  const amtPaid=R2(_paySource.amountPaid||0);
+  const _unifiedPayments=isJob?invoicePaymentsForJobs(_orderJobs&&_orderJobs.length?_orderJobs:[data]):invoicePaymentsForQuote(data);
+  const amtPaid=R2(paymentSum(_unifiedPayments));
   // True order total: sum all line subtotals + VAT
   const _orderJobs=data.orderNo?db.jobs.filter(j=>j.orderNo===data.orderNo):null;
   const _orderSubtotal=_orderJobs&&_orderJobs.length>1?
@@ -3514,10 +3515,10 @@ function showInvoiceModal(jobId,quoteObj){
       ${amtPaid>0?`
       <div class="inv-total-row" style="color:var(--ok)"><span>Amount Paid</span><span>${GHS(amtPaid)}</span></div>
       <div class="inv-total-row" style="color:${balance>0?'var(--err)':'var(--ok)'};font-weight:700;font-size:13px"><span>${balance>0?'OUTSTANDING BALANCE':'FULLY SETTLED'}</span><span>${GHS(balance)}</span></div>
-      ${_paySource.payments&&_paySource.payments.length?`
+      ${_unifiedPayments&&_unifiedPayments.length?`
         <div style="margin-top:10px;padding:10px 12px;background:var(--bg);border-radius:8px;border:1px solid var(--border)">
           <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">Payment History</div>
-          ${_paySource.payments.map((p,i)=>`
+          ${_unifiedPayments.map((p,i)=>`
             <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;padding:4px 0;${i>0?'border-top:1px solid var(--border)':''}">
               <span style="color:var(--muted)">${p.date} &nbsp;·&nbsp; ${p.method||'Cash'} &nbsp;·&nbsp; ${p.by||'—'}</span>
               <strong style="color:var(--ok)">${GHS(p.amount)}</strong>
@@ -4449,6 +4450,10 @@ async function loadAllData() {
       }
     });
 
+    // Unify payment history across the full invoice lifecycle: quotation ⇄ converted job order.
+    db.quotations.forEach(q=>syncInvoicePaymentStateForQuote(q));
+    Object.values(jobsByOrder).forEach(js=>syncInvoicePaymentStateForJobs(js));
+
     db.sales       = (sales||[]).map(mapSale);
     db.expenses    = (expenses||[]).map(mapExpense);
     db.pettyCash   = (pettyCash||[]).map(mapPettyCash);
@@ -4610,7 +4615,7 @@ function mapCustomer(c) {
 
 function mapJob(j) {
   return {
-    id: j.id, jobNo: j.job_no, orderNo: j.order_no,
+    id: j.id, jobNo: j.job_no, orderNo: j.order_no, quotation_id: j.quotation_id || null, quote_id: j.quotation_id || null,
     date: j.job_date, dueDate: j.due_date,
     client: j.customer_name, phone: j.customer_phone,
     branch: j.branch || j.branch_name, type: j.service_type,
@@ -4648,6 +4653,7 @@ function mapPayment(p) {
     id: p.id,
     payment_ref: p.payment_ref || p.ref || '',
     quotation_id: p.quotation_id || null,
+    quote_no: p.quote_no || p.quoteNo || '',
     job_id: p.job_id || null,
     order_no: p.order_no || p.orderNo || '',
     date: p.payment_date || p.date || p.created_at || TODAY(),
@@ -5220,6 +5226,69 @@ function resolveConfirm(result){
 function paymentSum(list){
   return R2((Array.isArray(list)?list:[]).reduce((s,p)=>s+(parseFloat(p.amount)||0),0));
 }
+
+function uniqPayments(list){
+  const seen=new Set();
+  return (Array.isArray(list)?list:[]).filter(p=>{
+    const k=p.id||p.payment_ref||`${p.date||''}|${p.amount||0}|${p.method||''}|${p.quotation_id||''}|${p.order_no||''}`;
+    if(seen.has(k))return false; seen.add(k); return true;
+  });
+}
+function jobsForQuote(q){
+  if(!q)return[];
+  return db.jobs.filter(j=>j.quotation_id===q.id || j.quote_id===q.id || j.quoteNo===q.quoteNo || j.quote_no===q.quoteNo || (j.notes||'').includes(q.quoteNo));
+}
+function quoteForJob(j){
+  if(!j)return null;
+  return db.quotations.find(q=>q.id===j.quotation_id || q.id===j.quote_id || q.quoteNo===j.quoteNo || q.quote_no===j.quoteNo || (j.notes||'').includes(q.quoteNo))||null;
+}
+function invoicePaymentsForQuote(q){
+  if(!q)return[];
+  const jobs=jobsForQuote(q);
+  const orderNos=new Set(jobs.map(j=>j.orderNo||j.order_no).filter(Boolean));
+  const jobIds=new Set(jobs.map(j=>j.id).filter(Boolean));
+  const rows=(Array.isArray(db.payments)?db.payments:[]).filter(p=>
+    p.quotation_id===q.id ||
+    (p.quote_no&&p.quote_no===q.quoteNo) ||
+    (p.order_no&&orderNos.has(p.order_no)) ||
+    (p.orderNo&&orderNos.has(p.orderNo)) ||
+    (p.job_id&&jobIds.has(p.job_id))
+  );
+  return uniqPayments([...(q.payments||[]), ...jobs.flatMap(j=>j.payments||[]), ...rows]).sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')));
+}
+function invoicePaymentsForJobs(orderJobs){
+  const jobs=Array.isArray(orderJobs)?orderJobs:[];
+  const first=jobs[0]||{};
+  const q=quoteForJob(first);
+  const orderNos=new Set(jobs.map(j=>j.orderNo||j.order_no).filter(Boolean));
+  const jobIds=new Set(jobs.map(j=>j.id).filter(Boolean));
+  const rows=(Array.isArray(db.payments)?db.payments:[]).filter(p=>
+    (q&&p.quotation_id===q.id) ||
+    (p.order_no&&orderNos.has(p.order_no)) ||
+    (p.orderNo&&orderNos.has(p.orderNo)) ||
+    (p.job_id&&jobIds.has(p.job_id))
+  );
+  return uniqPayments([...(q?.payments||[]), ...jobs.flatMap(j=>j.payments||[]), ...rows]).sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')));
+}
+function syncInvoicePaymentStateForQuote(q){
+  if(!q)return;
+  const pays=invoicePaymentsForQuote(q);
+  const paid=R2(paymentSum(pays));
+  q.payments=pays; q.amountPaid=paid; q.amount_paid=paid;
+  const jobs=jobsForQuote(q); const total=quoteNoVat(q)?R2(parseFloat(q.subtotal)||0):R2(parseFloat(q.total)||0);
+  const ps=paid>=total-0.01?'Paid':(paid>0?'Partial':'Unpaid');
+  q.paymentStatus=ps; q.payment_status=ps;
+  jobs.forEach(j=>{j.payments=pays; j.amountPaid=paid; j.amount_paid=paid; j.paymentStatus=ps; j.payment_status=ps; if(ps==='Paid')j.paid=true;});
+}
+function syncInvoicePaymentStateForJobs(orderJobs){
+  const jobs=Array.isArray(orderJobs)?orderJobs:[]; if(!jobs.length)return;
+  const pays=invoicePaymentsForJobs(jobs);
+  const paid=R2(paymentSum(pays));
+  const total=jobOrderTotal(jobs).total;
+  const ps=paid>=total-0.01?'Paid':(paid>0?'Partial':'Unpaid');
+  jobs.forEach(j=>{j.payments=pays; j.amountPaid=paid; j.amount_paid=paid; j.paymentStatus=ps; j.payment_status=ps; if(ps==='Paid')j.paid=true;});
+  const q=quoteForJob(jobs[0]); if(q){q.payments=pays; q.amountPaid=paid; q.amount_paid=paid; q.paymentStatus=ps; q.payment_status=ps;}
+}
 function storedNoVatForInvoice(inv){
   if(!inv) return false;
   if(inv.isQuote) return quoteNoVat(inv.quote);
@@ -5247,7 +5316,8 @@ function resolveInvoiceTarget(){
     const noVat=quoteNoVat(q);
     const subtotal=R2(parseFloat(q.subtotal)||parseFloat(q.amount)||parseFloat(q.total)||0);
     const total=R2(noVat ? subtotal : (parseFloat(q.total)||calcVAT(subtotal).total));
-    const alreadyPaid=R2(parseFloat(q.amountPaid ?? q.amount_paid)||paymentSum(q.payments));
+    syncInvoicePaymentStateForQuote(q);
+    const alreadyPaid=R2(paymentSum(invoicePaymentsForQuote(q)));
     const outstanding=R2(Math.max(total-alreadyPaid,0));
     return{isQuote:true,quote:q,jobs:[],client:q.client,total,subtotal,alreadyPaid,outstanding,noVat};
   }
@@ -5256,7 +5326,8 @@ function resolveInvoiceTarget(){
   if(!orderJobs.length)return null;
   const firstJob=orderJobs.find(j=>j.isOrderHeader)||orderJobs[0];
   const jt=jobOrderTotal(orderJobs);
-  const alreadyPaid=R2(parseFloat(firstJob.amountPaid ?? firstJob.amount_paid)||paymentSum(firstJob.payments));
+  syncInvoicePaymentStateForJobs(orderJobs);
+  const alreadyPaid=R2(paymentSum(invoicePaymentsForJobs(orderJobs)));
   const outstanding=R2(Math.max(jt.total-alreadyPaid,0));
   return{isQuote:false,quote:null,jobs:orderJobs,firstJob,client:firstJob.client,total:jt.total,subtotal:jt.subtotal,alreadyPaid,outstanding,noVat:jt.noVat};
 }
@@ -5266,7 +5337,7 @@ function openPartPayPanel(){
   if(!inv){toastErr('Invoice not found.');return;}
   if(inv.outstanding<=0.01){toastWarn('This order is already fully paid.');return;}
   const ref=inv.isQuote?inv.quote.quoteNo:(inv.firstJob?.orderNo||inv.firstJob?.jobNo||'');
-  const _payHist=inv.isQuote?(inv.quote.payments||[]):(inv.firstJob?.payments||[]);
+  const _payHist=inv.isQuote?invoicePaymentsForQuote(inv.quote):invoicePaymentsForJobs(inv.jobs);
   document.getElementById('partPayAmt').max=inv.outstanding||inv.total;
   document.getElementById('partPayInfo').innerHTML=
     `<strong>${inv.client}</strong> — ${inv.isQuote?'Quotation':'Order'}: <strong>${ref}</strong><br>`+
@@ -5296,22 +5367,32 @@ async function applyPartPayment(){
   const newBalance=R2(Math.max(inv.total-newPaid,0));
   const ref=inv.isQuote?inv.quote.quoteNo:(inv.firstJob?.orderNo||inv.firstJob?.jobNo||'');
   const branch=inv.isQuote?(inv.quote.branch||inv.quote.branch_name):(inv.firstJob.branch||inv.firstJob.branch_name);
+  const linkedJobs=inv.isQuote?jobsForQuote(inv.quote):inv.jobs;
+  const linkedFirstJob=linkedJobs.find(j=>j.isOrderHeader)||linkedJobs[0]||inv.firstJob||null;
+  const linkedQuote=inv.isQuote?inv.quote:quoteForJob(inv.firstJob);
   const paymentRef=await nextRef('PMT','PMT-'+PAD(Date.now()%10000));
-  const paymentRow={payment_ref:paymentRef,job_id:inv.isQuote?null:(inv.firstJob?.id||null),order_no:inv.isQuote?null:(inv.firstJob?.orderNo||null),quotation_id:inv.isQuote?inv.quote.id:null,customer_name:inv.client,branch_name:branch,payment_date:TODAY(),amount:amt,method,notes:`Payment on ${ref}`,received_by_id:currentUser?.id||null,received_by:currentUser?.name||''};
+  const paymentRow={
+    payment_ref:paymentRef,
+    job_id:linkedFirstJob?.id||null,
+    order_no:linkedFirstJob?.orderNo||linkedFirstJob?.order_no||null,
+    quotation_id:linkedQuote?.id||null,
+    quote_no:linkedQuote?.quoteNo||linkedQuote?.quote_no||null,
+    customer_name:inv.client,branch_name:branch,payment_date:TODAY(),amount:amt,method,
+    notes:`Payment on ${ref}`,received_by_id:currentUser?.id||null,received_by:currentUser?.name||''
+  };
   const paySaved=await sbInsert('payments',paymentRow);
   if(!paySaved){toastErr('Payment was not saved. Check payments policy/columns.');return;}
 
-  if(inv.isQuote){
-    const paidStatus=newBalance<=0.01?'Paid':'Partial';
-    await sbUpdate('quotations',inv.quote.id,{amount_paid:newPaid,payment_status:paidStatus}).catch(()=>{});
-    inv.quote.amountPaid=newPaid;inv.quote.amount_paid=newPaid;inv.quote.paymentStatus=paidStatus;inv.quote.payment_status=paidStatus;
-    if(!inv.quote.payments)inv.quote.payments=[];inv.quote.payments.push({amount:amt,date:TODAY(),by:currentUser?.name||'',method});
-  }else{
-    const paidStatus=newBalance<=0.01?'Paid':'Partial';
-    await sbPatchWhere('jobs',`order_no=eq.${encodeURIComponent(inv.firstJob.orderNo||inv.firstJob.jobNo)}`,{payment_status:paidStatus,amount_paid:newPaid}).catch(()=>{});
-    inv.jobs.forEach(j=>{j.paymentStatus=paidStatus;j.payment_status=paidStatus;j.amountPaid=newPaid;j.amount_paid=newPaid;if(paidStatus==='Paid')j.paid=true;});
-    if(!inv.firstJob.payments)inv.firstJob.payments=[];inv.firstJob.payments.push({amount:amt,date:TODAY(),by:currentUser?.name||'',method});
+  const paidStatus=newBalance<=0.01?'Paid':'Partial';
+  if(linkedQuote){
+    await sbUpdate('quotations',linkedQuote.id,{amount_paid:newPaid,payment_status:paidStatus}).catch(()=>{});
   }
+  if(linkedFirstJob){
+    await sbPatchWhere('jobs',`order_no=eq.${encodeURIComponent(linkedFirstJob.orderNo||linkedFirstJob.jobNo)}`,{payment_status:paidStatus,amount_paid:newPaid}).catch(()=>{});
+  }
+  db.payments.push(mapPayment(paySaved||paymentRow));
+  if(linkedQuote) syncInvoicePaymentStateForQuote(linkedQuote);
+  if(linkedFirstJob) syncInvoicePaymentStateForJobs(linkedJobs.length?linkedJobs:[linkedFirstJob]);
 
   // Create sales ledger entry for the cash received. If this fails, do NOT undo the payment.
   try{
