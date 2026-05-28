@@ -522,7 +522,7 @@ hr{border:none;border-top:1px solid var(--border);margin:12px 0;}
     <div class="fb no-print">
       <input class="si" type="text" placeholder="Search client or quote #…" oninput="rQuotes(this.value)">
       <select class="fc" style="width:150px" onchange="rQuotes('','',this.value)"><option value="">All Statuses</option><option>Draft</option><option>Sent</option><option>Approved</option><option>Converted</option><option>Rejected</option></select>
-      <button class="btn btn-p" onclick="openM('mQuote')">+ New Quotation</button>
+      <button class="btn btn-p" onclick="openQuoteModal()">+ New Quotation</button>
     </div>
     <div class="card"><div class="tw"><table><thead><tr><th>Date</th><th>Quote #</th><th>Client</th><th>Description</th><th>Branch</th><th>Subtotal</th><th>VAT</th><th>Total (GHS)</th><th>Status</th><th>Actions</th></tr></thead><tbody id="quoteBody"></tbody></table></div></div>
   </div>
@@ -2735,6 +2735,19 @@ async function saveCustEdit(){
 
 // ══ QUOTATIONS ══
 let _qF={search:'',status:''};
+function openQuoteModal(){
+  // Always start a new quotation cleanly. This prevents No VAT or old branch choices
+  // from carrying over from the previous quotation modal.
+  const noVat=document.getElementById('qNoVat');
+  if(noVat) noVat.checked=false;
+  const br=document.getElementById('qBr');
+  if(br && currentUser?.branch && currentUser.branch!=='All') br.value=currentUser.branch;
+  const vd=document.getElementById('qVd');
+  if(vd && !vd.value){ const d=new Date(); d.setDate(d.getDate()+14); vd.value=d.toISOString().slice(0,10); }
+  if(!_quoteLines || !_quoteLines.length){ _quoteLines=[]; addQuoteLine(); }
+  calcQuoteGrand();
+  openM('mQuote');
+}
 async function saveQuote(){
   const cl=sanitise(document.getElementById('qCl').value);
   if(!cl)return toastErr('Client name is required.');
@@ -2747,13 +2760,15 @@ async function saveQuote(){
   const quoteNo=await nextRef('QT','QT-'+PAD(db.quoteCtr++));
   const cust=findCustomerByName(cl);
   const branch=document.getElementById('qBr').value;
-  const qrow={quote_no:quoteNo,customer_id:cust?.id||null,customer_name:cl,customer_phone:sanitise(document.getElementById('qPh').value),branch_name:branch,quote_date:TODAY(),valid_until:document.getElementById('qVd').value||null,status:'Draft',notes:sanitise(document.getElementById('qNo').value),subtotal:grandSub,vat_amount:v.vat,nhil_amount:v.nhil,getfund_amount:v.getf,total:v.total,amount_paid:0,prepared_by_id:currentUser?.id||null,prepared_by:currentUser?.name||'',no_vat:noVat};
+  const qDesc=lines.map(l=>l.desc).filter(Boolean).join('; ');
+  const qType=lines.map(l=>l.type).filter(Boolean).join(', ');
+  const qrow={quote_no:quoteNo,customer_id:cust?.id||null,customer_name:cl,customer_phone:sanitise(document.getElementById('qPh').value),branch_name:branch,branch:branch,quote_date:TODAY(),valid_until:document.getElementById('qVd').value||null,status:'Draft',notes:sanitise(document.getElementById('qNo').value),description:qDesc,service_type:qType,qty:lines.reduce((sum,l)=>sum+l.qty,0),unit_price:lines.length===1?lines[0].unitPrice:0,subtotal:grandSub,vat_amount:v.vat,nhil_amount:v.nhil,getfund_amount:v.getf,total:v.total,amount_paid:0,prepared_by_id:currentUser?.id||null,prepared_by:currentUser?.name||'',no_vat:noVat,vat_enabled:!noVat};
   const saved=await sbInsert('quotations',qrow);
   if(!saved)return toastErr('Quotation was not saved to Supabase.');
-  const itemRows=lines.map((l,i)=>({quotation_id:saved.id,line_number:i+1,description:l.desc,service_type:l.type,qty:l.qty,unit_price:l.unitPrice,subtotal:l.subtotal,media:l.media||null,finishing:l.finishing||l.note||null,sort_order:i}));
+  const itemRows=lines.map((l,i)=>({quotation_id:saved.id,line_number:i+1,description:l.desc,service_type:l.type,qty:l.qty,unit_price:l.unitPrice,subtotal:l.subtotal,media:l.media||null,finishing:l.finishing||l.note||null,notes:l.note||'',no_vat:noVat,sort_order:i}));
   const savedItems=await sbInsertMany('quotation_items',itemRows);
   if(!savedItems || savedItems.length!==itemRows.length) console.warn('Some quotation items may not have saved. Check quotation_items policy/columns.');
-  const q={id:saved.id,quoteNo,date:TODAY(),client:cl,phone:qrow.customer_phone,whatsapp:sanitise(document.getElementById('qWA').value),lines:lines.map(l=>({type:l.type,desc:l.desc,qty:l.qty,unitPrice:l.unitPrice,subtotal:l.subtotal,note:l.note,media:l.media,finishing:l.finishing})),type:lines.map(l=>l.type).join(', '),desc:lines.map(l=>l.desc).join('; '),qty:lines.reduce((sum,l)=>sum+l.qty,0),unitPrice:lines.length===1?lines[0].unitPrice:0,subtotal:grandSub,vat:v.totalLevy,total:v.total,branch,validUntil:qrow.valid_until,notes:qrow.notes,status:'Draft',amountPaid:0,payments:[],noVat:noVat};
+  const q={id:saved.id,quoteNo,date:TODAY(),client:cl,phone:qrow.customer_phone,whatsapp:sanitise(document.getElementById('qWA').value),lines:lines.map(l=>({type:l.type,desc:l.desc,qty:l.qty,unitPrice:l.unitPrice,subtotal:l.subtotal,note:l.note,media:l.media,finishing:l.finishing})),type:qType,desc:qDesc,qty:qrow.qty,unitPrice:qrow.unit_price,subtotal:grandSub,vat:v.totalLevy,total:v.total,branch,validUntil:qrow.valid_until,notes:qrow.notes,status:'Draft',amountPaid:0,payments:[],noVat:noVat};
   db.quotations.push(q);
   auditLog('quotation',`Quotation created: ${quoteNo} for ${cl}`,`${lines.length} item(s) | Total: ${GHS(v.total)} | Branch: ${branch}${noVat?' | No VAT':''}`,quoteNo);
   saveDB();closeM('mQuote');rQuotes();rDash();toastOk(`Quotation ${quoteNo} saved.`);
@@ -2776,7 +2791,7 @@ function rQuotes(f,_,st){
       ${q.lines&&q.lines.length>1?
         `<div style="font-size:10px;font-weight:700;color:var(--gold);margin-bottom:2px">${q.lines.length} ITEMS</div>
          <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:11px">${q.lines.map(l=>l.type).join(' · ')}</div>`:
-        `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block">${q.desc}</span>`
+        `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block">${q.desc||q.type||q.notes||'—'}</span>`
       }
     </td>
     <td><span class="b b-i">${q.branch}</span></td>
@@ -2803,7 +2818,9 @@ function isCsoLikeRole(v){
   return ['cso','manager','ceo','sysadmin','super_admin','super'].includes(r);
 }
 function quoteNoVat(q){
-  return !!(q?.noVat || q?.no_vat || (Number(q?.vat||0)===0 && Number(q?.total||0)===Number(q?.subtotal||0)));
+  // VAT must follow the user's explicit quotation choice only.
+  // Do NOT infer No VAT from zero VAT amounts, because new/failed records can have 0 before sync.
+  return !!(q && (q.noVat===true || q.no_vat===true || q.vat_enabled===false));
 }
 function safeQuoteLines(q){
   const lines=(q?.lines||[]).filter(l=>l && (l.desc||l.description||l.type||l.service_type));
@@ -2927,7 +2944,7 @@ async function applyConvertToJob(){
     const deadline=document.getElementById(`conv_deadline_${i}`)?.value?.trim()||'';
     const itemNotes=document.getElementById(`conv_notes_${i}`)?.value?.trim()||l.note||'';
     const finishing=document.getElementById(`conv_finish_${i}`)?.value||l.finishing||'SPACE';
-    const row={job_no:jobNo,order_no:orderNo,quotation_id:q.id,customer_id:findCustomerByName(q.client)?.id||null,customer_name:q.client,customer_phone:q.phone||'',branch_name:q.branch,job_date:TODAY(),due_date:dueDate||null,service_type:l.type,description:l.desc,qty:l.qty,unit_price:l.unitPrice,media:l.media||null,finishing,status:'Pending',payment_status:'Unpaid',amount_paid:0,assigned_to_id:assignedStaff?.id||null,assigned_to:assignedTo,prepared_by_id:preparedStaff?.id||currentUser?.id||null,prepared_by:preparedBy,notes:`From ${q.quoteNo}${itemNotes?' — '+itemNotes:''}${deadline?' | Deadline: '+deadline:''}`,is_order_header:i===0,line_index:i,created_by_id:currentUser?.id||null,no_vat:noVat};
+    const row={job_no:jobNo,order_no:orderNo,quotation_id:q.id,customer_id:findCustomerByName(q.client)?.id||null,customer_name:q.client,customer_phone:q.phone||'',branch_name:q.branch,job_date:TODAY(),due_date:dueDate||null,service_type:l.type,description:l.desc,qty:l.qty,unit_price:l.unitPrice,media:l.media||null,finishing,status:'Pending',payment_status:'Unpaid',amount_paid:0,assigned_to_id:assignedStaff?.id||null,assigned_to:assignedTo,prepared_by_id:preparedStaff?.id||currentUser?.id||null,prepared_by:preparedBy,notes:`From ${q.quoteNo}${itemNotes?' — '+itemNotes:''}${deadline?' | Deadline: '+deadline:''}`,is_order_header:i===0,line_index:i,created_by_id:currentUser?.id||null,no_vat:noVat,vat_enabled:!noVat,vat_amount:i===0?v.vat:0,nhil_amount:i===0?v.nhil:0,getfund_amount:i===0?v.getf:0,total:i===0?v.total:l.subtotal};
     const saved=await sbInsert('jobs',row);
     if(!saved)return toastErr('Job order was not saved to Supabase.');
     created.push({id:saved.id,jobNo,orderNo,date:TODAY(),client:q.client,phone:q.phone,type:l.type,desc:l.desc,qty:l.qty,unitPrice:l.unitPrice,subtotal:l.subtotal,vat:i===0?v.totalLevy:0,total:i===0?v.total:l.subtotal,finishing,assignedTo,preparedBy,branch:q.branch,dueDate,deadline,notes:row.notes,status:'Pending',paid:false,paymentStatus:'Unpaid',amountPaid:0,payments:[],noVat:noVat,isLineItem:!isOnly,lineIndex:i+1,totalLines:quoteLines.length,isOrderHeader:i===0,statusLog:[{status:'Pending',ts:new Date().toISOString(),by:preparedBy}]});
@@ -3176,7 +3193,7 @@ function showInvoiceModal(jobId,quoteObj){
   else{data=db.jobs.find(j=>j.id===jobId);if(!data)return;document.getElementById('invTitle').textContent=`Invoice — ${data.jobNo}`;}
   _currentInvData=data;_currentInvIsJob=!quoteObj;
   const isJob=!quoteObj;
-  const noVat=!!(data.noVat||data.no_vat||document.getElementById('noVatToggle')?.checked);
+  const noVat=!!(data.noVat===true || data.no_vat===true || data.vat_enabled===false);
   const noVatBox=document.getElementById('noVatToggle'); if(noVatBox) noVatBox.checked=noVat;
   // Sum all line items for multi-line orders
   const allOrderItems=data.orderNo?db.jobs.filter(j=>j.orderNo===data.orderNo):null;
@@ -3252,9 +3269,8 @@ function showInvoiceModal(jobId,quoteObj){
         ${(()=>{
           // Find all line items sharing the same orderNo, or just this job
           // For quotes with lines array, use those; for jobs use orderNo grouping
-          const allItems=data.lines&&data.lines.length>1?data.lines:
-                         (data.orderNo?db.jobs.filter(j=>j.orderNo===data.orderNo):null);
-          const items=allItems&&allItems.length>1?allItems:[data];
+          const allItems=!isJob?safeQuoteLines(data):(data.orderNo?db.jobs.filter(j=>j.orderNo===data.orderNo):null);
+          const items=allItems&&allItems.length?allItems:[data];
           return items.map((item,i)=>`
             <tr>
               <td style="text-align:center;color:var(--muted)">${i+1}</td>
@@ -4147,7 +4163,30 @@ async function loadAllData() {
 
     // Map to the shape the existing UI code expects
     db.customers   = (customers || []).map(mapCustomer);
-    db.quotations  = (quotations||[]).map(q => { const mapped=mapQuotation(q); const items=(quoteItems||[]).filter(i=>i.quotation_id===q.id); mapped.lines=items.map(i=>({type:i.service_type||i.type||'Printing Services',desc:i.description||i.desc||mapped.desc||'Printing Services',qty:parseFloat(i.qty||i.quantity||1),unitPrice:parseFloat(i.unit_price||i.unitPrice||0),subtotal:parseFloat(i.subtotal||0),media:i.media||'',finishing:i.finishing||'',note:i.finishing||i.note||''})); if(mapped.lines.length){mapped.type=mapped.lines.map(l=>l.type).join(', '); mapped.desc=mapped.lines.map(l=>l.desc).join('; '); mapped.qty=mapped.lines.reduce((s,l)=>s+l.qty,0); mapped.unitPrice=mapped.lines.length===1?mapped.lines[0].unitPrice:0;} return mapped; });
+    db.quotations  = (quotations||[]).map(q => {
+      const mapped=mapQuotation(q);
+      const items=(quoteItems||[]).filter(i=>i.quotation_id===q.id);
+      mapped.lines=items.map(i=>{
+        const qty=parseFloat(i.qty||i.quantity||1)||1;
+        const unitPrice=parseFloat(i.unit_price||i.unitPrice||0)||0;
+        const subtotal=parseFloat(i.subtotal||0)||R2(qty*unitPrice);
+        return {
+          type:i.service_type||i.type||mapped.type||'Printing Services',
+          desc:i.description||i.desc||mapped.desc||mapped.notes||'Printing Services',
+          qty,unitPrice,subtotal,media:i.media||'',finishing:i.finishing||'',note:i.notes||i.finishing||i.note||''
+        };
+      });
+      if(mapped.lines.length){
+        mapped.type=mapped.lines.map(l=>l.type).filter(Boolean).join(', ')||mapped.type;
+        mapped.desc=mapped.lines.map(l=>l.desc).filter(Boolean).join('; ')||mapped.desc;
+        mapped.qty=mapped.lines.reduce((s,l)=>s+l.qty,0);
+        mapped.unitPrice=mapped.lines.length===1?mapped.lines[0].unitPrice:0;
+      }
+      mapped.noVat=quoteNoVat(mapped);
+      mapped.vat=mapped.noVat?0:parseFloat(q.vat_amount||mapped.vat||0);
+      mapped.total=mapped.noVat?R2(mapped.subtotal):parseFloat(q.total||mapped.total||calcVAT(mapped.subtotal).total);
+      return mapped;
+    });
     db.jobs        = (jobs||[]).map(mapJob);
     db.sales       = (sales||[]).map(mapSale);
     db.expenses    = (expenses||[]).map(mapExpense);
@@ -4164,10 +4203,11 @@ async function loadAllData() {
     db.vatNum    = sMap.vat_number || '';
     db.gsUrl     = sMap.gs_url     || '';
 
-    // Rebuild staff list from user_profiles for assignment dropdowns
-    if (isAdminRole()) {
-      const profiles = await sbGet('user_profiles?select=*&is_active=eq.true');
-      db.staff = (profiles||[]).map(p => ({
+    // Rebuild staff list from user_profiles for assignment dropdowns.
+    // CSOs need this too so they can assign jobs to production staff in their branch.
+    const profiles = await sbGet('user_profiles?select=*&is_active=eq.true');
+    if (profiles && profiles.length) {
+      db.staff = profiles.map(p => ({
         id: p.id, name: p.full_name, role: p.role,
         branch: p.branch_name || 'All', phone: p.phone || ''
       }));
@@ -4301,11 +4341,11 @@ function mapJob(j) {
     id: j.id, jobNo: j.job_no, orderNo: j.order_no,
     date: j.job_date, dueDate: j.due_date,
     client: j.customer_name, phone: j.customer_phone,
-    branch: j.branch_name, type: j.service_type,
+    branch: j.branch || j.branch_name, type: j.service_type,
     desc: j.description, qty: j.qty, unitPrice: j.unit_price,
     subtotal: parseFloat(j.subtotal||0),
-    vat: 0, // calculated on the fly via calcVAT()
-    total: parseFloat(j.subtotal||0), // base; VAT added when displaying
+    vat: (j.no_vat===true || j.vat_enabled===false) ? 0 : parseFloat(j.vat_amount||0),
+    total: (j.no_vat===true || j.vat_enabled===false) ? parseFloat(j.subtotal||0) : parseFloat(j.total||j.subtotal||0),
     media: j.media, finishing: j.finishing,
     status: j.status,
     paid: j.payment_status === 'Paid',
@@ -4313,7 +4353,7 @@ function mapJob(j) {
     amountPaid: parseFloat(j.amount_paid||0),
     assignedTo: j.assigned_to, preparedBy: j.prepared_by,
     notes: j.notes, isOrderHeader: j.is_order_header,
-    lineIndex: j.line_index, payments: [], noVat: !!j.no_vat
+    lineIndex: j.line_index, payments: [], noVat: !!(j.no_vat===true || j.vat_enabled===false)
   };
 }
 
@@ -4322,12 +4362,12 @@ function mapQuotation(q) {
     id: q.id, quoteNo: q.quote_no,
     date: q.quote_date, validUntil: q.valid_until,
     client: q.customer_name, phone: q.customer_phone,
-    branch: q.branch_name, status: q.status, notes: q.notes,
+    branch: q.branch || q.branch_name, status: q.status || 'Draft', notes: q.notes,
     subtotal: parseFloat(q.subtotal||0),
     vat: parseFloat(q.vat_amount||0),
     total: parseFloat(q.total||0),
     amountPaid: parseFloat(q.amount_paid||0),
-    preparedBy: q.prepared_by, lines: [], payments: [], noVat: !!q.no_vat, desc: q.description || q.notes || '', type: q.service_type || 'Printing Services'
+    preparedBy: q.prepared_by, lines: [], payments: [], noVat: !!(q.no_vat===true || q.vat_enabled===false), desc: q.description || q.notes || '', type: q.service_type || 'Printing Services', qty: parseFloat(q.qty||0), unitPrice: parseFloat(q.unit_price||0)
   };
 }
 
@@ -4975,8 +5015,9 @@ async function applyPartPayment(){
     inv.firstJob.amountPaid=newPaid;if(!inv.firstJob.payments)inv.firstJob.payments=[];inv.firstJob.payments.push({amount:amt,date:TODAY(),by:currentUser?.name||'',method});
   }
   const saleRef=await nextRef('SL','SL-'+PAD(db.saleCtr++));
-  const saleSub=R2(amt/(1+totalLevy()/100));
-  const saleVat=R2(amt-saleSub);
+  const invNoVat = !!(inv.isQuote ? quoteNoVat(inv.quote) : (inv.firstJob?.noVat===true || inv.firstJob?.no_vat===true || inv.firstJob?.vat_enabled===false));
+  const saleSub=invNoVat ? R2(amt) : R2(amt/(1+totalLevy()/100));
+  const saleVat=invNoVat ? 0 : R2(amt-saleSub);
   const saleRow={ref:saleRef,sale_date:TODAY(),customer_name:inv.client,service_type:inv.isQuote?'Quotation':(inv.firstJob?.type||'Print Services'),branch_name:branch,payment_id:null,job_id:inv.isQuote?null:(inv.firstJob?.id||null),subtotal:saleSub,vat_amount:saleVat,total:amt,payment_method:method,description:`Payment on ${ref} — Balance: ${GHS(newBalance)}`,recorded_by_id:currentUser?.id||null,recorded_by:currentUser?.name||''};
   await sbInsert('sales',saleRow);
   db.sales.push({id:UID(),ref:saleRef,date:TODAY(),customer:inv.client,serviceType:saleRow.service_type,branch,subtotal:saleSub,vat:saleVat,credit:amt,payment:method,desc:saleRow.description});
