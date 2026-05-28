@@ -3452,7 +3452,7 @@ function showInvoiceModal(jobId,quoteObj){
       <div class="inv-total-row"><span>GETFund (${db.getRate||2.5}%)</span><span>${GHS(v.getf)}</span></div>
 `}
       <div class="inv-total-row grand"><span>TOTAL DUE</span><span>${GHS(v.total)}</span></div>
-      ${isJob&&amtPaid>0?`
+      ${amtPaid>0?`
       <div class="inv-total-row" style="color:var(--ok)"><span>Amount Paid</span><span>${GHS(amtPaid)}</span></div>
       <div class="inv-total-row" style="color:${balance>0?'var(--err)':'var(--ok)'};font-weight:700;font-size:13px"><span>${balance>0?'OUTSTANDING BALANCE':'FULLY SETTLED'}</span><span>${GHS(balance)}</span></div>
       ${_paySource.payments&&_paySource.payments.length?`
@@ -4208,44 +4208,54 @@ async function initApp() {
   if (loginScr) loginScr.style.display = 'none';
   if (msg) msg.textContent = 'Checking session…';
 
-  // ── Restore session on page refresh ─────────────────────────────────────
-  // One valid path only: a Supabase JWT stored in _sb_session that has not
-  // yet expired. There is no profile-cache fallback, no local extension.
-  // If no valid JWT exists the login screen is shown immediately.
+  // ── Restore user on page refresh ────────────────────────────────────────
+  // PIN authentication is handled by the Edge Function. In the browser we use
+  // Supabase anon REST access plus the verified profile saved at login.
+  // IMPORTANT: Do NOT fetch "limit=1" from user_profiles here — that can pick
+  // Super Admin and switch the user after refresh. Restore the exact person
+  // who logged in.
+  const savedProfile = localStorage.getItem('_bms_profile');
   const savedSession = localStorage.getItem('_sb_session');
 
-  if (savedSession) {
+  if (savedProfile) {
     try {
-      const s = JSON.parse(savedSession);
-      // Require at least 60 seconds of remaining validity
-      if (s.access_token && s.expires_at && Date.now() / 1000 < s.expires_at - 60) {
-        _sbSession = s;
-        _sbHeaders = sbHeaders();
-        if (msg) msg.textContent = 'Loading your data…';
-        const profile = await fetchCurrentProfile();
-        if (profile) {
-          currentUser = profile;
-          await loadAllData();
-          if (loading) loading.style.display = 'none';
-          completeLogin();
-          return;
+      const p = JSON.parse(savedProfile);
+      if (p && p.name) {
+        currentUser = {
+          id:     p.id || null,
+          name:   p.name || p.full_name,
+          role:   normaliseRole(p.role || 'cso'),
+          branch: p.branch || p.branch_name || 'All'
+        };
+
+        // Keep a lightweight session object if one exists. sbHeaders() uses
+        // the anon key only, but some helper code checks that _sbSession exists.
+        try {
+          _sbSession = savedSession ? JSON.parse(savedSession) : {
+            access_token: 'pin-session',
+            refresh_token: null,
+            expires_at: Math.floor(Date.now() / 1000) + 86400
+          };
+        } catch(_) {
+          _sbSession = { access_token: 'pin-session', refresh_token: null, expires_at: Math.floor(Date.now() / 1000) + 86400 };
         }
-        // JWT present but profile fetch failed — session may be invalid
-        localStorage.removeItem('_sb_session');
-        localStorage.removeItem('_bms_profile');
-        _sbSession = null;
-      } else {
-        // JWT expired — discard and require fresh login
-        localStorage.removeItem('_sb_session');
-        localStorage.removeItem('_bms_profile');
+
+        _sbHeaders = sbHeaders();
+        if (msg) msg.textContent = `Loading ${currentUser.name}'s workspace…`;
+        await loadAllData();
+        if (loading) loading.style.display = 'none';
+        completeLogin();
+        return;
       }
     } catch(e) {
-      localStorage.removeItem('_sb_session');
       localStorage.removeItem('_bms_profile');
+      localStorage.removeItem('_sb_session');
+      _sbSession = null;
+      currentUser = null;
     }
   }
 
-  // No valid JWT — show login screen
+  // No saved verified profile — show login screen
   loadFromLocalCache();
   setTimeout(() => {
     if (loading) loading.style.display = 'none';
@@ -4308,7 +4318,7 @@ async function loadAllData() {
   try {
     // Parallel fetch of all tables the user has access to
     const [customers, quotations, quoteItems, jobs, sales, expenses, pettyCash,
-           settings, serviceTypes, branches, profiles] = await Promise.all([
+           payments, settings, serviceTypes, branches, profiles] = await Promise.all([
       sbGet('customers?select=*&is_active=eq.true&order=name'),
       sbGet('quotations?select=*&order=created_at.desc&limit=500'),
       sbGet('quotation_items?select=*&order=line_number'),
@@ -4316,6 +4326,7 @@ async function loadAllData() {
       sbGet('sales?select=*&order=sale_date.desc&limit=500'),
       sbGet('expenses?select=*&order=expense_date.desc&limit=500'),
       sbGet('petty_cash?select=*&order=request_date.desc&limit=200'),
+      sbGet('payments?select=*&order=payment_date.asc,created_at.asc&limit=1000'),
       sbGet('settings?select=key,value'),
       sbGet('service_types?select=name&is_active=eq.true&order=sort_order'),
       sbGet('branches?select=id,name'),
@@ -4349,6 +4360,45 @@ async function loadAllData() {
       return mapped;
     });
     db.jobs        = (jobs||[]).map(mapJob);
+
+    // Attach payment history from Supabase so invoices show previous part/full payments after refresh.
+    const mappedPayments=(payments||[]).map(mapPayment);
+    const quoteById={};
+    db.quotations.forEach(q=>{ quoteById[q.id]=q; if(!q.payments) q.payments=[]; });
+    const jobsById={};
+    const jobsByOrder={};
+    db.jobs.forEach(j=>{
+      jobsById[j.id]=j;
+      if(j.orderNo){ (jobsByOrder[j.orderNo]=jobsByOrder[j.orderNo]||[]).push(j); }
+      if(!j.payments) j.payments=[];
+    });
+    mappedPayments.forEach(p=>{
+      if(p.quotation_id && quoteById[p.quotation_id]){
+        quoteById[p.quotation_id].payments.push(p);
+        quoteById[p.quotation_id].amountPaid=R2(paymentSum(quoteById[p.quotation_id].payments));
+        quoteById[p.quotation_id].amount_paid=quoteById[p.quotation_id].amountPaid;
+        return;
+      }
+      const orderNo=p.order_no || p.orderNo || '';
+      if(orderNo && jobsByOrder[orderNo]){
+        const orderPayments=(jobsByOrder[orderNo][0].payments||[]);
+        orderPayments.push(p);
+        const totalPaid=R2(paymentSum(orderPayments));
+        jobsByOrder[orderNo].forEach(j=>{
+          j.payments=orderPayments;
+          j.amountPaid=totalPaid;
+          j.amount_paid=totalPaid;
+          j.paymentStatus=totalPaid>=jobOrderTotal(jobsByOrder[orderNo]).total-0.01?'Paid':(totalPaid>0?'Partial':j.paymentStatus);
+        });
+        return;
+      }
+      if(p.job_id && jobsById[p.job_id]){
+        jobsById[p.job_id].payments.push(p);
+        jobsById[p.job_id].amountPaid=R2(paymentSum(jobsById[p.job_id].payments));
+        jobsById[p.job_id].amount_paid=jobsById[p.job_id].amountPaid;
+      }
+    });
+
     db.sales       = (sales||[]).map(mapSale);
     db.expenses    = (expenses||[]).map(mapExpense);
     db.pettyCash   = (pettyCash||[]).map(mapPettyCash);
@@ -4540,6 +4590,21 @@ function mapQuotation(q) {
     total: parseFloat(q.total||0),
     amountPaid: parseFloat(q.amount_paid||0),
     preparedBy: q.prepared_by, lines: [], payments: [], noVat: !!(q.no_vat===true || q.vat_enabled===false), desc: q.description || q.notes || '', type: q.service_type || 'Printing Services', qty: parseFloat(q.qty||0), unitPrice: parseFloat(q.unit_price||0)
+  };
+}
+
+function mapPayment(p) {
+  return {
+    id: p.id,
+    payment_ref: p.payment_ref || p.ref || '',
+    quotation_id: p.quotation_id || null,
+    job_id: p.job_id || null,
+    order_no: p.order_no || p.orderNo || '',
+    date: p.payment_date || p.date || p.created_at || TODAY(),
+    amount: parseFloat(p.amount || 0) || 0,
+    method: p.method || p.payment_method || 'Cash',
+    by: p.received_by || p.recorded_by || '',
+    notes: p.notes || ''
   };
 }
 
