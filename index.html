@@ -5100,39 +5100,48 @@ function resolveConfirm(result){
 
 // ── PART PAYMENT PANEL HELPERS ──
 // Resolve the current invoice — returns {isQuote, jobs, quote, client, total, alreadyPaid, outstanding}
+function paymentSum(list){
+  return R2((Array.isArray(list)?list:[]).reduce((s,p)=>s+(parseFloat(p.amount)||0),0));
+}
+function storedNoVatForInvoice(inv){
+  if(!inv) return false;
+  if(inv.isQuote) return quoteNoVat(inv.quote);
+  const j=inv.firstJob||{};
+  return !!(j.noVat===true || j.no_vat===true || j.vat_enabled===false);
+}
+function jobOrderTotal(orderJobs){
+  const jobs=Array.isArray(orderJobs)?orderJobs:[];
+  const first=jobs[0]||{};
+  const noVat=!!(first.noVat===true || first.no_vat===true || first.vat_enabled===false);
+  const sub=R2(jobs.reduce((s,j)=>s+(parseFloat(j.subtotal)||0),0));
+  const storedTotal=R2(parseFloat(first.order_total ?? first.total_amount ?? first.total) || 0);
+  const total=noVat ? sub : (storedTotal>0 ? storedTotal : calcVAT(sub).total);
+  return {subtotal:sub,total:R2(total),noVat};
+}
+// Resolve the current invoice — returns {isQuote, jobs, quote, client, total, alreadyPaid, outstanding}
 function resolveInvoiceTarget(){
-  const jobId=document.getElementById('_invJobId').value;
-  const orderNo=document.getElementById('_invOrderNo').value;
-  const quoteId=document.getElementById('_invQuoteId').value;
+  const jobId=document.getElementById('_invJobId')?.value||'';
+  const orderNo=document.getElementById('_invOrderNo')?.value||'';
+  const quoteId=document.getElementById('_invQuoteId')?.value||'';
 
   if(quoteId){
-    // This is a quotation proforma
     const q=db.quotations.find(x=>x.id===quoteId);
     if(!q)return null;
-    const alreadyPaid=R2(q.amountPaid||0);
-    const outstanding=R2(q.total-alreadyPaid);
-    // quotes store total as entered (may or may not include VAT)
-    const subtotal=q.subtotal||q.total;
-    const outstandingNoVat=R2(subtotal-(alreadyPaid));
-    return{isQuote:true,quote:q,jobs:[],client:q.client,
-           total:q.total,subtotal,alreadyPaid,outstanding,outstandingNoVat};
+    const noVat=quoteNoVat(q);
+    const subtotal=R2(parseFloat(q.subtotal)||parseFloat(q.amount)||parseFloat(q.total)||0);
+    const total=R2(noVat ? subtotal : (parseFloat(q.total)||calcVAT(subtotal).total));
+    const alreadyPaid=R2(parseFloat(q.amountPaid ?? q.amount_paid)||paymentSum(q.payments));
+    const outstanding=R2(Math.max(total-alreadyPaid,0));
+    return{isQuote:true,quote:q,jobs:[],client:q.client,total,subtotal,alreadyPaid,outstanding,noVat};
   }
 
-  // This is a job order
   const orderJobs=orderNo?db.jobs.filter(j=>j.orderNo===orderNo):db.jobs.filter(j=>j.id===jobId);
   if(!orderJobs.length)return null;
-  const firstJob=orderJobs[0];
-  const orderSubtotal=R2(orderJobs.reduce((s,j)=>s+(j.subtotal||0),0));
-  const vatCalc=calcVAT(orderSubtotal);
-  const trueTotal=vatCalc.total;
-  const alreadyPaid=R2(firstJob.amountPaid||0);
-  const outstanding=R2(trueTotal-alreadyPaid);
-  // outstandingNoVat: proportional subtotal remaining
-  const paidRatio=trueTotal>0?alreadyPaid/trueTotal:0;
-  const outstandingNoVat=R2(orderSubtotal*(1-paidRatio));
-  return{isQuote:false,quote:null,jobs:orderJobs,
-         firstJob,client:firstJob.client,total:trueTotal,subtotal:orderSubtotal,
-         alreadyPaid,outstanding,outstandingNoVat};
+  const firstJob=orderJobs.find(j=>j.isOrderHeader)||orderJobs[0];
+  const jt=jobOrderTotal(orderJobs);
+  const alreadyPaid=R2(parseFloat(firstJob.amountPaid ?? firstJob.amount_paid)||paymentSum(firstJob.payments));
+  const outstanding=R2(Math.max(jt.total-alreadyPaid,0));
+  return{isQuote:false,quote:null,jobs:orderJobs,firstJob,client:firstJob.client,total:jt.total,subtotal:jt.subtotal,alreadyPaid,outstanding,noVat:jt.noVat};
 }
 
 function openPartPayPanel(){
@@ -5141,22 +5150,16 @@ function openPartPayPanel(){
   if(inv.outstanding<=0.01){toastWarn('This order is already fully paid.');return;}
   const ref=inv.isQuote?inv.quote.quoteNo:(inv.firstJob?.orderNo||inv.firstJob?.jobNo||'');
   const _payHist=inv.isQuote?(inv.quote.payments||[]):(inv.firstJob?.payments||[]);
-  // Use pre-calculated No-VAT values from resolveInvoiceTarget
-  const _noVat=document.getElementById('noVatToggle')?.checked||false;
-  if(_noVat){
-    inv.total=R2(inv.subtotal||inv.total);
-    inv.outstanding=R2(inv.outstandingNoVat||inv.outstanding);
-  }
   document.getElementById('partPayAmt').max=inv.outstanding||inv.total;
   document.getElementById('partPayInfo').innerHTML=
     `<strong>${inv.client}</strong> — ${inv.isQuote?'Quotation':'Order'}: <strong>${ref}</strong><br>`+
     `<span style="display:inline-flex;gap:16px;margin-top:4px;flex-wrap:wrap">`+
     `<span>Total: <strong style="color:var(--brand)">${GHS(inv.total)}</strong></span>`+
     `<span>Paid: <strong style="color:var(--ok)">${GHS(inv.alreadyPaid)}</strong></span>`+
-    `<span>Outstanding: <strong style="color:var(--err)">${GHS(inv.outstanding)}</strong></span></span>`+
+    `<span>Outstanding: <strong style="color:var(--err)">${GHS(inv.outstanding)}</strong></span>`+
+    (inv.noVat?`<span class="b b-warn">No VAT</span>`:'')+`</span>`+
     (_payHist.length?`<div style="font-size:10px;color:var(--muted);margin-top:6px">Previous payments: ${_payHist.map(p=>`${p.date} — ${GHS(p.amount)} (${p.method||'Cash'})`).join(' | ')}</div>`:'');
   document.getElementById('partPayAmt').value='';
-  document.getElementById('partPayAmt').max=inv.outstanding||inv.total;
   document.getElementById('partPayPanel').classList.add('open');
   document.getElementById('partPayAmt').focus();
 }
@@ -5165,34 +5168,44 @@ function closePartPayPanel(){
   document.getElementById('partPayAmt').value='';
 }
 async function applyPartPayment(){
-  const amt=parseFloat(document.getElementById('partPayAmt').value);
+  const amt=R2(parseFloat(document.getElementById('partPayAmt').value));
   if(!amt||isNaN(amt)||amt<=0){toastErr('Please enter a valid payment amount.');return;}
   const method=document.getElementById('partPayMethod').value;
   const inv=resolveInvoiceTarget();
   if(!inv){toastErr('Invoice not found.');return;}
   if(amt>inv.outstanding+0.01){toastErr(`Amount exceeds outstanding balance of ${GHS(inv.outstanding)}.`);return;}
-  const newPaid=R2(inv.alreadyPaid+amt), newBalance=R2(inv.total-newPaid);
+
+  const newPaid=R2(inv.alreadyPaid+amt);
+  const newBalance=R2(Math.max(inv.total-newPaid,0));
   const ref=inv.isQuote?inv.quote.quoteNo:(inv.firstJob?.orderNo||inv.firstJob?.jobNo||'');
-  const branch=inv.isQuote?inv.quote.branch:inv.firstJob.branch;
+  const branch=inv.isQuote?(inv.quote.branch||inv.quote.branch_name):(inv.firstJob.branch||inv.firstJob.branch_name);
   const paymentRef=await nextRef('PMT','PMT-'+PAD(Date.now()%10000));
   const paymentRow={payment_ref:paymentRef,job_id:inv.isQuote?null:(inv.firstJob?.id||null),order_no:inv.isQuote?null:(inv.firstJob?.orderNo||null),quotation_id:inv.isQuote?inv.quote.id:null,customer_name:inv.client,branch_name:branch,payment_date:TODAY(),amount:amt,method,notes:`Payment on ${ref}`,received_by_id:currentUser?.id||null,received_by:currentUser?.name||''};
-  await sbInsert('payments',paymentRow);
+  const paySaved=await sbInsert('payments',paymentRow);
+  if(!paySaved){toastErr('Payment was not saved. Check payments policy/columns.');return;}
+
   if(inv.isQuote){
-    await sbUpdate('quotations',inv.quote.id,{amount_paid:newPaid});
-    inv.quote.amountPaid=newPaid;if(!inv.quote.payments)inv.quote.payments=[];inv.quote.payments.push({amount:amt,date:TODAY(),by:currentUser?.name||'',method});
+    const paidStatus=newBalance<=0.01?'Paid':'Partial';
+    await sbUpdate('quotations',inv.quote.id,{amount_paid:newPaid,payment_status:paidStatus}).catch(()=>{});
+    inv.quote.amountPaid=newPaid;inv.quote.amount_paid=newPaid;inv.quote.paymentStatus=paidStatus;inv.quote.payment_status=paidStatus;
+    if(!inv.quote.payments)inv.quote.payments=[];inv.quote.payments.push({amount:amt,date:TODAY(),by:currentUser?.name||'',method});
   }else{
-    const status=newBalance<=0.01?'Paid':'Partial';
-    await sbPatchWhere('jobs',`order_no=eq.${encodeURIComponent(inv.firstJob.orderNo||inv.firstJob.jobNo)}`,{payment_status:status,amount_paid:newPaid});
-    inv.jobs.forEach(j=>{j.paymentStatus=status;j.amountPaid=j.isOrderHeader?newPaid:(status==='Paid'?(j.subtotal||0):0);if(status==='Paid')j.paid=true;});
-    inv.firstJob.amountPaid=newPaid;if(!inv.firstJob.payments)inv.firstJob.payments=[];inv.firstJob.payments.push({amount:amt,date:TODAY(),by:currentUser?.name||'',method});
+    const paidStatus=newBalance<=0.01?'Paid':'Partial';
+    await sbPatchWhere('jobs',`order_no=eq.${encodeURIComponent(inv.firstJob.orderNo||inv.firstJob.jobNo)}`,{payment_status:paidStatus,amount_paid:newPaid}).catch(()=>{});
+    inv.jobs.forEach(j=>{j.paymentStatus=paidStatus;j.payment_status=paidStatus;j.amountPaid=newPaid;j.amount_paid=newPaid;if(paidStatus==='Paid')j.paid=true;});
+    if(!inv.firstJob.payments)inv.firstJob.payments=[];inv.firstJob.payments.push({amount:amt,date:TODAY(),by:currentUser?.name||'',method});
   }
-  const saleRef=await nextRef('SL','SL-'+PAD(db.saleCtr++));
-  const invNoVat = !!(inv.isQuote ? quoteNoVat(inv.quote) : (inv.firstJob?.noVat===true || inv.firstJob?.no_vat===true || inv.firstJob?.vat_enabled===false));
-  const saleSub=invNoVat ? R2(amt) : R2(amt/(1+totalLevy()/100));
-  const saleVat=invNoVat ? 0 : R2(amt-saleSub);
-  const saleRow={ref:saleRef,sale_date:TODAY(),customer_name:inv.client,service_type:inv.isQuote?'Quotation':(inv.firstJob?.type||'Print Services'),branch_name:branch,payment_id:null,job_id:inv.isQuote?null:(inv.firstJob?.id||null),subtotal:saleSub,vat_amount:saleVat,total:amt,payment_method:method,description:`Payment on ${ref} — Balance: ${GHS(newBalance)}`,recorded_by_id:currentUser?.id||null,recorded_by:currentUser?.name||''};
-  await sbInsert('sales',saleRow);
-  db.sales.push({id:UID(),ref:saleRef,date:TODAY(),customer:inv.client,serviceType:saleRow.service_type,branch,subtotal:saleSub,vat:saleVat,credit:amt,payment:method,desc:saleRow.description});
+
+  // Create sales ledger entry for the cash received. If this fails, do NOT undo the payment.
+  try{
+    const saleRef=await nextRef('SL','SL-'+PAD(db.saleCtr++));
+    const saleSub=inv.noVat ? R2(amt) : R2(amt/(1+totalLevy()/100));
+    const saleVat=inv.noVat ? 0 : R2(amt-saleSub);
+    const saleRow={ref:saleRef,sale_date:TODAY(),customer_name:inv.client,service_type:inv.isQuote?'Quotation':(inv.firstJob?.type||'Print Services'),branch_name:branch,payment_id:paySaved.id||null,job_id:inv.isQuote?null:(inv.firstJob?.id||null),subtotal:saleSub,vat_amount:saleVat,total:amt,payment_method:method,description:`Payment on ${ref} — Balance: ${GHS(newBalance)}`,recorded_by_id:currentUser?.id||null,recorded_by:currentUser?.name||''};
+    const savedSale=await sbInsert('sales',saleRow);
+    db.sales.push({id:savedSale?.id||UID(),ref:saleRef,date:TODAY(),customer:inv.client,serviceType:saleRow.service_type,branch,subtotal:saleSub,vat:saleVat,credit:amt,payment:method,desc:saleRow.description});
+  }catch(e){console.warn('Sales ledger entry failed after payment was saved:',e);}
+
   auditLog('finance',`Payment received: ${ref}`,`Client: ${inv.client} | Amount: ${GHS(amt)} via ${method} | Balance: ${GHS(newBalance)}`,ref);
   saveDB();closePartPayPanel();toastOk(newBalance<=0.01?`Payment of ${GHS(amt)} received — FULLY PAID ✓`:`Payment of ${GHS(amt)} recorded — Outstanding: ${GHS(newBalance)}`);
   if(inv.isQuote)showInvoiceModal(null,inv.quote); else showInvoiceModal(inv.firstJob.id);
