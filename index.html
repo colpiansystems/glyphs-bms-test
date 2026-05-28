@@ -2141,9 +2141,16 @@ function myBranch(){
   if(r==='ceo'||r==='owner'||r==='manager'||r==='finance_officer'||r==='sysadmin')return null;
   return currentUser?.branch||'Awoshie';
 }
+function branchOf(x){
+  return (x?.branch || x?.branch_name || x?.branchName || '').trim();
+}
 function filterByBranch(arr,field='branch'){
   const b=myBranch();
-  return b?arr.filter(x=>x[field]===b):arr;
+  if(!b) return arr;
+  return arr.filter(x=>{
+    const v = field === 'branch' ? branchOf(x) : (x?.[field] || branchOf(x));
+    return v === b;
+  });
 }
 
 // ══ NAVIGATION ══
@@ -2613,6 +2620,7 @@ async function saveCust(){
     phone: p,
     whatsapp: sanitise(document.getElementById('cWA')?.value || ''),
     email: sanitise(document.getElementById('cE')?.value || ''),
+    branch: document.getElementById('cB')?.value || currentUser?.branch || 'Awoshie',
     branch_name: document.getElementById('cB')?.value || currentUser?.branch || 'Awoshie',
     notes: sanitise(document.getElementById('cNote')?.value || ''),
     is_active: true,
@@ -2635,7 +2643,8 @@ async function saveCust(){
       phone: saved.phone || row.phone,
       whatsapp: saved.whatsapp || row.whatsapp || '',
       email: saved.email || row.email || '',
-      branch: saved.branch_name || row.branch_name,
+      branch: saved.branch || saved.branch_name || row.branch || row.branch_name,
+      branch_name: saved.branch_name || saved.branch || row.branch_name || row.branch,
       notes: saved.notes || row.notes || ''
     };
 
@@ -2673,7 +2682,7 @@ function rCustomers(f){
     <td>${c.phone}</td>
     <td>${c.whatsapp?`<span style="color:var(--ok)">📱 ${c.whatsapp}</span>`:'<span style="color:var(--faint)">—</span>'}</td>
     <td style="color:var(--muted)">${c.email||'—'}</td>
-    <td><span class="b b-i">${c.branch}</span></td>
+    <td><span class="b b-i">${branchOf(c) || '—'}</span></td>
     <td style="text-align:center">${qc(c)}</td>
     <td style="text-align:center">${jc(c)}</td>
     <td style="white-space:nowrap">
@@ -4082,7 +4091,7 @@ async function loadAllData() {
     ]);
 
     // Map to the shape the existing UI code expects
-    db.customers   = customers  || [];
+    db.customers   = (customers || []).map(mapCustomer);
     db.quotations  = (quotations||[]).map(q => { const mapped=mapQuotation(q); const items=(quoteItems||[]).filter(i=>i.quotation_id===q.id); mapped.lines=items.map(i=>({type:i.service_type,desc:i.description,qty:parseFloat(i.qty||0),unitPrice:parseFloat(i.unit_price||0),subtotal:parseFloat(i.subtotal||0),media:i.media,finishing:i.finishing,note:i.finishing||''})); if(mapped.lines.length){mapped.type=mapped.lines.map(l=>l.type).join(', '); mapped.desc=mapped.lines.map(l=>l.desc).join('; '); mapped.qty=mapped.lines.reduce((s,l)=>s+l.qty,0); mapped.unitPrice=mapped.lines.length===1?mapped.lines[0].unitPrice:0;} return mapped; });
     db.jobs        = (jobs||[]).map(mapJob);
     db.sales       = (sales||[]).map(mapSale);
@@ -4220,6 +4229,18 @@ function refreshOperationalViews(){
 }
 
 // ── Data shape mappers (DB → UI format) ─────────────────────────────────
+function mapCustomer(c) {
+  const br = c.branch || c.branch_name || c.branchName || '';
+  return {
+    ...c,
+    branch: br,
+    branch_name: c.branch_name || br,
+    whatsapp: c.whatsapp || '',
+    email: c.email || '',
+    notes: c.notes || ''
+  };
+}
+
 function mapJob(j) {
   return {
     id: j.id, jobNo: j.job_no, orderNo: j.order_no,
