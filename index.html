@@ -2816,7 +2816,7 @@ async function saveQuote(){
   const branch=document.getElementById('qBr').value;
   const qDesc=lines.map(l=>l.desc).filter(Boolean).join('; ');
   const qType=lines.map(l=>l.type).filter(Boolean).join(', ');
-  const qrow={quote_no:quoteNo,customer_id:cust?.id||null,customer_name:cl,customer_phone:sanitise(document.getElementById('qPh').value),branch_name:branch,branch:branch,quote_date:TODAY(),valid_until:document.getElementById('qVd').value||null,status:'Draft',notes:sanitise(document.getElementById('qNo').value),description:qDesc,service_type:qType,qty:lines.reduce((sum,l)=>sum+l.qty,0),unit_price:lines.length===1?lines[0].unitPrice:0,subtotal:grandSub,vat_amount:v.vat,nhil_amount:v.nhil,getfund_amount:v.getf,total:v.total,amount_paid:0,prepared_by_id:currentUser?.id||null,prepared_by:currentUser?.name||'',no_vat:noVat,vat_enabled:!noVat};
+  const qrow={quote_no:quoteNo,customer_id:cust?.id||null,customer_name:cl,customer_phone:sanitise(document.getElementById('qPh').value),branch_name:branch,branch:branch,quote_date:TODAY(),valid_until:document.getElementById('qVd').value||null,status:'Draft',notes:sanitise(document.getElementById('qNo').value),description:qDesc,service_type:qType,qty:lines.reduce((sum,l)=>sum+l.qty,0),unit_price:lines.length===1?lines[0].unitPrice:0,subtotal:grandSub,vat_amount:v.vat,nhil_amount:v.nhil,getfund_amount:v.getf,total:v.total,amount_paid:0,prepared_by_id:isUuid(currentUser?.id)?currentUser.id:null,prepared_by:currentUser?.name||'',no_vat:noVat,vat_enabled:!noVat};
   const saved=await sbInsert('quotations',qrow);
   if(!saved)return toastErr('Quotation was not saved to Supabase.');
   const itemRows=lines.map((l,i)=>({quotation_id:saved.id,line_number:i+1,description:l.desc,service_type:l.type,qty:l.qty,unit_price:l.unitPrice,media:l.media||null,finishing:l.finishing||l.note||null,notes:l.note||'',no_vat:noVat,sort_order:i}));
@@ -2862,6 +2862,9 @@ function rQuotes(f,_,st){
 // ── Quote → Job Assignment Modal ──
 function roleKey(v){
   return String(v||'').toLowerCase().replace(/\s+/g,'_');
+}
+function isUuid(v){
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(v||''));
 }
 function isProductionRole(v){
   const r=roleKey(v);
@@ -3059,7 +3062,7 @@ async function applyConvertToJob(){
     const deadline=document.getElementById(`conv_deadline_${i}`)?.value?.trim()||'';
     const itemNotes=document.getElementById(`conv_notes_${i}`)?.value?.trim()||l.note||'';
     const finishing=document.getElementById(`conv_finish_${i}`)?.value||l.finishing||'SPACE';
-    const row={job_no:jobNo,order_no:orderNo,quotation_id:q.id,customer_id:findCustomerByName(q.client)?.id||null,customer_name:q.client,customer_phone:q.phone||'',branch_name:q.branch,job_date:TODAY(),due_date:dueDate||null,service_type:l.type,description:l.desc,qty:l.qty,unit_price:l.unitPrice,media:l.media||null,finishing,status:'Pending',payment_status:'Unpaid',amount_paid:0,assigned_to_id:assignedStaff?.id||null,assigned_to:assignedTo,prepared_by_id:preparedStaff?.id||currentUser?.id||null,prepared_by:preparedBy,notes:`From ${q.quoteNo}${itemNotes?' — '+itemNotes:''}${deadline?' | Deadline: '+deadline:''}`,is_order_header:i===0,line_index:i,created_by_id:currentUser?.id||null,no_vat:noVat,vat_enabled:!noVat,vat_amount:i===0?v.vat:0,nhil_amount:i===0?v.nhil:0,getfund_amount:i===0?v.getf:0,total:i===0?v.total:l.subtotal};
+    const row={job_no:jobNo,order_no:orderNo,quotation_id:q.id,customer_id:findCustomerByName(q.client)?.id||null,customer_name:q.client,customer_phone:q.phone||'',branch_name:q.branch,job_date:TODAY(),due_date:dueDate||null,service_type:l.type,description:l.desc,qty:l.qty,unit_price:l.unitPrice,media:l.media||null,finishing,status:'Pending',payment_status:'Unpaid',amount_paid:0,assigned_to_id:isUuid(assignedStaff?.id)?assignedStaff.id:null,assigned_to:assignedTo,prepared_by_id:isUuid(preparedStaff?.id)?preparedStaff.id:(isUuid(currentUser?.id)?currentUser.id:null),prepared_by:preparedBy,notes:`From ${q.quoteNo}${itemNotes?' — '+itemNotes:''}${deadline?' | Deadline: '+deadline:''}`,is_order_header:i===0,line_index:i,created_by_id:isUuid(currentUser?.id)?currentUser.id:null,no_vat:noVat,vat_enabled:!noVat,vat_amount:i===0?v.vat:0,nhil_amount:i===0?v.nhil:0,getfund_amount:i===0?v.getf:0,total:i===0?v.total:l.subtotal};
     const saved=await sbInsert('jobs',row);
     if(!saved)return toastErr('Job order was not saved to Supabase.');
     created.push({id:saved.id,jobNo,orderNo,date:TODAY(),client:q.client,phone:q.phone,type:l.type,desc:l.desc,qty:l.qty,unitPrice:l.unitPrice,subtotal:l.subtotal,vat:i===0?v.totalLevy:0,total:i===0?v.total:l.subtotal,finishing,assignedTo,preparedBy,branch:q.branch,dueDate,deadline,notes:row.notes,status:'Pending',paid:false,paymentStatus:'Unpaid',amountPaid:0,payments:[],noVat:noVat,isLineItem:!isOnly,lineIndex:i+1,totalLines:quoteLines.length,isOrderHeader:i===0,statusLog:[{status:'Pending',ts:new Date().toISOString(),by:preparedBy}]});
@@ -3277,7 +3280,7 @@ async function applyStatus(){
   const ok=await sbUpdate('jobs',id,row);
   if(!ok)return toastErr('Status was not saved to Supabase.');
   try{
-    await sbInsert('job_status_history',{job_id:id,from_status:old,to_status:st,changed_by_id:currentUser?.id||null,changed_by:currentUser?.name||'',notes:null});
+    await sbInsert('job_status_history',{job_id:id,from_status:old,to_status:st,changed_by_id:isUuid(currentUser?.id)?currentUser.id:null,changed_by:currentUser?.name||'',notes:null});
   }catch(e){console.warn('Status history not saved:',e);}
   j.status=st; if(st==='Completed')j.paid=true;
   if(!j.statusLog)j.statusLog=[];
@@ -3329,7 +3332,7 @@ async function applyReassign(){
       job_id:id,
       from_status:j.status,
       to_status:j.status,
-      changed_by_id:currentUser?.id||null,
+      changed_by_id:isUuid(currentUser?.id)?currentUser.id:null,
       changed_by:currentUser?.name||'',
       notes:`Re-assigned from ${oldStaff||'Unassigned'} to ${newStaff}`
     });
@@ -3692,7 +3695,7 @@ async function saveSale(){
   if(!canAccess(['ceo','manager','finance_officer','cso']))return toastErr('Access denied: finance operations require Finance Officer or above.');
   const am=parseFloat(document.getElementById('sAm').value)||0;if(!am)return toastErr('Amount required.');
   const v=calcVAT(am), ref=await nextRef('SL','SL-'+PAD(db.saleCtr++));
-  const row={ref,sale_date:document.getElementById('sD').value||TODAY(),customer_name:sanitise(document.getElementById('sCu').value),service_type:document.getElementById('sSv').value,branch_name:document.getElementById('sBr').value,subtotal:am,vat_amount:v.vat,nhil_amount:v.nhil,getfund_amount:v.getf,total:v.total,payment_method:document.getElementById('sPm').value,description:sanitise(document.getElementById('sDe').value),recorded_by_id:currentUser?.id||null,recorded_by:currentUser?.name||''};
+  const row={ref,sale_date:document.getElementById('sD').value||TODAY(),customer_name:sanitise(document.getElementById('sCu').value),service_type:document.getElementById('sSv').value,branch_name:document.getElementById('sBr').value,subtotal:am,vat_amount:v.vat,nhil_amount:v.nhil,getfund_amount:v.getf,total:v.total,payment_method:document.getElementById('sPm').value,description:sanitise(document.getElementById('sDe').value),recorded_by_id:isUuid(currentUser?.id)?currentUser.id:null,recorded_by:currentUser?.name||''};
   const saved=await sbInsert('sales',row);
   if(!saved)return toastErr('Sale was not saved to Supabase.');
   db.sales.push({id:saved.id,ref,date:row.sale_date,customer:row.customer_name,serviceType:row.service_type,branch:row.branch_name,subtotal:am,vat:v.totalLevy,credit:v.total,payment:row.payment_method,desc:row.description});
@@ -3704,7 +3707,7 @@ async function saveExp(){
   const am=parseFloat(document.getElementById('eAm').value)||0;if(!am)return toastErr('Amount required.');
   const claim=document.getElementById('eVatClaim').value==='1';const v=claim?calcVAT(am):{vat:0,nhil:0,getf:0,totalLevy:0,total:am};
   const ref=await nextRef('EXP','EX-'+PAD(db.expCtr++));
-  const row={ref,expense_date:document.getElementById('eD').value||TODAY(),category:document.getElementById('eCat').value,vendor:sanitise(document.getElementById('eVe').value),branch_name:document.getElementById('eBr').value,subtotal:am,vat_input:v.totalLevy||0,total:v.total,payment_method:document.getElementById('ePm').value,description:sanitise(document.getElementById('eDe').value),vat_claim:claim,recorded_by_id:currentUser?.id||null,recorded_by:currentUser?.name||''};
+  const row={ref,expense_date:document.getElementById('eD').value||TODAY(),category:document.getElementById('eCat').value,vendor:sanitise(document.getElementById('eVe').value),branch_name:document.getElementById('eBr').value,subtotal:am,vat_input:v.totalLevy||0,total:v.total,payment_method:document.getElementById('ePm').value,description:sanitise(document.getElementById('eDe').value),vat_claim:claim,recorded_by_id:isUuid(currentUser?.id)?currentUser.id:null,recorded_by:currentUser?.name||''};
   const saved=await sbInsert('expenses',row);
   if(!saved)return toastErr('Expense was not saved to Supabase.');
   db.expenses.push({id:saved.id,ref,date:row.expense_date,category:row.category,vendor:row.vendor,branch:row.branch_name,subtotal:am,vatInput:row.vat_input,debit:row.total,payment:row.payment_method,desc:row.description,vatClaim:claim?1:0});
@@ -5245,7 +5248,7 @@ async function applyPartPayment(){
   const ref=inv.isQuote?inv.quote.quoteNo:(inv.firstJob?.orderNo||inv.firstJob?.jobNo||'');
   const branch=inv.isQuote?(inv.quote.branch||inv.quote.branch_name):(inv.firstJob.branch||inv.firstJob.branch_name);
   const paymentRef=await nextRef('PMT','PMT-'+PAD(Date.now()%10000));
-  const paymentRow={payment_ref:paymentRef,job_id:inv.isQuote?null:(inv.firstJob?.id||null),order_no:inv.isQuote?null:(inv.firstJob?.orderNo||null),quotation_id:inv.isQuote?inv.quote.id:null,customer_name:inv.client,branch_name:branch,payment_date:TODAY(),amount:amt,method,notes:`Payment on ${ref}`,received_by_id:currentUser?.id||null,received_by:currentUser?.name||''};
+  const paymentRow={payment_ref:paymentRef,job_id:inv.isQuote?null:(inv.firstJob?.id||null),order_no:inv.isQuote?null:(inv.firstJob?.orderNo||null),quotation_id:inv.isQuote?inv.quote.id:null,customer_name:inv.client,branch_name:branch,payment_date:TODAY(),amount:amt,method,notes:`Payment on ${ref}`,received_by_id:isUuid(currentUser?.id)?currentUser.id:null,received_by:currentUser?.name||''};
   const paySaved=await sbInsert('payments',paymentRow);
   if(!paySaved){toastErr('Payment was not saved. Check payments policy/columns.');return;}
 
@@ -5266,7 +5269,7 @@ async function applyPartPayment(){
     const saleRef=await nextRef('SL','SL-'+PAD(db.saleCtr++));
     const saleSub=inv.noVat ? R2(amt) : R2(amt/(1+totalLevy()/100));
     const saleVat=inv.noVat ? 0 : R2(amt-saleSub);
-    const saleRow={ref:saleRef,sale_date:TODAY(),customer_name:inv.client,service_type:inv.isQuote?'Quotation':(inv.firstJob?.type||'Print Services'),branch_name:branch,payment_id:paySaved.id||null,job_id:inv.isQuote?null:(inv.firstJob?.id||null),subtotal:saleSub,vat_amount:saleVat,total:amt,payment_method:method,description:`Payment on ${ref} — Balance: ${GHS(newBalance)}`,recorded_by_id:currentUser?.id||null,recorded_by:currentUser?.name||''};
+    const saleRow={ref:saleRef,sale_date:TODAY(),customer_name:inv.client,service_type:inv.isQuote?'Quotation':(inv.firstJob?.type||'Print Services'),branch_name:branch,payment_id:paySaved.id||null,job_id:inv.isQuote?null:(inv.firstJob?.id||null),subtotal:saleSub,vat_amount:saleVat,total:amt,payment_method:method,description:`Payment on ${ref} — Balance: ${GHS(newBalance)}`,recorded_by_id:isUuid(currentUser?.id)?currentUser.id:null,recorded_by:currentUser?.name||''};
     const savedSale=await sbInsert('sales',saleRow);
     db.sales.push({id:savedSale?.id||UID(),ref:saleRef,date:TODAY(),customer:inv.client,serviceType:saleRow.service_type,branch,subtotal:saleSub,vat:saleVat,credit:amt,payment:method,desc:saleRow.description});
   }catch(e){console.warn('Sales ledger entry failed after payment was saved:',e);}
