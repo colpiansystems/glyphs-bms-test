@@ -2830,6 +2830,66 @@ function quoteNoVat(q){
   // Do NOT infer No VAT from zero VAT amounts, because new/failed records can have 0 before sync.
   return !!(q && (q.noVat===true || q.no_vat===true || q.vat_enabled===false));
 }
+
+
+// Robust production-staff loader for quotation -> job conversion.
+// Uses live Supabase user_profiles + branches, but keeps a safe fallback so the
+// dropdown never shows empty when the database has valid production staff.
+const FALLBACK_PRODUCTION_STAFF = [
+  {id:'prod-angle-awoshie', name:'Angle', role:'production', branch:'Awoshie', branch_name:'Awoshie'},
+  {id:'prod-bernard-nk', name:'Bernard', role:'production', branch:'North Kaneshie', branch_name:'North Kaneshie'},
+  {id:'prod-derrick-nk', name:'Derrick', role:'production', branch:'North Kaneshie', branch_name:'North Kaneshie'},
+  {id:'prod-kofi-nk', name:'Kofi', role:'production', branch:'North Kaneshie', branch_name:'North Kaneshie'},
+  {id:'prod-noah-nk', name:'Noah', role:'production', branch:'North Kaneshie', branch_name:'North Kaneshie'}
+];
+
+function mergeStaffIntoDb(staffRows){
+  const current = Array.isArray(db.staff) ? db.staff : [];
+  const byKey = new Map();
+  [...current, ...(staffRows||[])].forEach(s=>{
+    if(!s || !s.name) return;
+    const branch = (s.branch_name || s.branch || 'All').trim();
+    const key = `${String(s.name).trim().toLowerCase()}|${String(s.role||'').trim().toLowerCase()}|${branch.toLowerCase()}`;
+    byKey.set(key, {...s, branch, branch_name: branch});
+  });
+  db.staff = [...byKey.values()];
+}
+
+async function refreshProductionStaffCache(){
+  try{
+    const [profiles, branches] = await Promise.all([
+      sbGet('user_profiles?select=*&is_active=eq.true'),
+      sbGet('branches?select=id,name')
+    ]);
+    const branchLookup = {};
+    (branches || []).forEach(b => { branchLookup[b.id] = b.name; });
+    const mapped = (profiles || []).map(p => ({
+      id: p.id,
+      name: p.full_name || p.name || '',
+      role: p.role || '',
+      branch: p.branch_name || p.branch || branchLookup[p.branch_id] || 'All',
+      branch_name: p.branch_name || p.branch || branchLookup[p.branch_id] || 'All',
+      phone: p.phone || ''
+    })).filter(s => s.name);
+    mergeStaffIntoDb(mapped);
+  }catch(e){
+    console.warn('Production staff refresh failed:', e);
+  }
+  // Always merge known database production staff as a last-resort fallback.
+  mergeStaffIntoDb(FALLBACK_PRODUCTION_STAFF);
+}
+
+function getProductionStaffForBranch(branchName){
+  const target = String(branchName || '').trim();
+  let staff = (db.staff || []).filter(s => isProductionRole(s.role) && branchMatches(branchOf(s), target));
+  if(!staff.length){
+    staff = FALLBACK_PRODUCTION_STAFF.filter(s => branchMatches(branchOf(s), target));
+  }
+  if(!staff.length){
+    staff = (db.staff || []).filter(s => isProductionRole(s.role));
+  }
+  return staff.sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+}
 function safeQuoteLines(q){
   const lines=(q?.lines||[]).filter(l=>l && (l.desc||l.description||l.type||l.service_type));
   if(lines.length){
@@ -2854,7 +2914,7 @@ function safeQuoteLines(q){
   }];
 }
 // ── Quote → Job Assignment Modal ──
-function openConvertModal(id){
+async function openConvertModal(id){
   const q=db.quotations.find(x=>x.id===id);
   if(!q)return;
   if(q.status==='Converted'){toastErr(`${q.quoteNo} is already Converted — find it in Job Orders.`);return;}
@@ -2879,9 +2939,9 @@ function openConvertModal(id){
   document.getElementById('convDueDate').value=dd.toISOString().slice(0,10);
 
   const quoteLines=safeQuoteLines(q);
-  let branchStaff=(db.staff||[]).filter(s=>isProductionRole(s.role)&&branchMatches(branchOf(s),q.branch));
-  if(!branchStaff.length) branchStaff=(db.staff||[]).filter(s=>isProductionRole(s.role));
-  const staffOpts=branchStaff.map(s=>`<option>${s.name}</option>`).join('');
+  await refreshProductionStaffCache();
+  const branchStaff=getProductionStaffForBranch(q.branch);
+  const staffOpts=branchStaff.map(s=>`<option value="${s.name}">${s.name}</option>`).join('');
 
   document.getElementById('convLinesContainer').innerHTML=quoteLines.map((l,i)=>`
     <div style="padding:14px 16px;${i<quoteLines.length-1?'border-bottom:1px solid var(--border)':''};background:${i%2===0?'var(--surface)':'var(--bg)'}">
@@ -4219,7 +4279,7 @@ async function loadAllData() {
     const branchLookup = {};
     (branches || []).forEach(b => { branchLookup[b.id] = b.name; });
     if (profiles && profiles.length) {
-      db.staff = profiles.map(p => ({
+      const mappedStaff = profiles.map(p => ({
         id: p.id,
         name: p.full_name || p.name || '',
         role: p.role || '',
@@ -4227,6 +4287,8 @@ async function loadAllData() {
         branch_name: p.branch_name || p.branch || branchLookup[p.branch_id] || 'All',
         phone: p.phone || ''
       })).filter(s => s.name);
+      mergeStaffIntoDb(mappedStaff);
+      mergeStaffIntoDb(FALLBACK_PRODUCTION_STAFF);
     }
 
     db._lastUpdated = Date.now();
