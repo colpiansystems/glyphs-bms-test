@@ -885,10 +885,15 @@ hr{border:none;border-top:1px solid var(--border);margin:12px 0;}
       </div>
       <div id="quoteLinesContainer"></div>
     </div>
-    <div style="display:flex;justify-content:flex-end;gap:20px;padding:8px 14px;background:var(--bg);border-radius:var(--r);font-size:13px">
-      <span style="color:var(--muted)">Subtotal: <strong id="qGrandSub">GHS 0.00</strong></span>
-      <span style="color:var(--info)">VAT & Levies: <strong id="qGrandVat">GHS 0.00</strong></span>
-      <span style="color:var(--brand);font-weight:700">Total: <strong id="qGrandTotal">GHS 0.00</strong></span>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 14px;background:var(--bg);border-radius:var(--r);font-size:13px;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;cursor:pointer">
+        <input type="checkbox" id="qNoVat" onchange="calcQuoteGrand()"> No VAT for this quotation
+      </label>
+      <div style="display:flex;justify-content:flex-end;gap:20px;flex-wrap:wrap">
+        <span style="color:var(--muted)">Subtotal: <strong id="qGrandSub">GHS 0.00</strong></span>
+        <span style="color:var(--info)">VAT & Levies: <strong id="qGrandVat">GHS 0.00</strong></span>
+        <span style="color:var(--brand);font-weight:700">Total: <strong id="qGrandTotal">GHS 0.00</strong></span>
+      </div>
     </div>
     </div>
     <div class="mf"><button class="btn btn-o" onclick="closeM('mQuote')">Cancel</button><button class="btn btn-p" onclick="saveQuote()">Create Quotation</button></div>
@@ -2571,14 +2576,18 @@ function getQuoteLineData(){
 }
 function calcQuoteGrand(){
   const lines=getQuoteLineData(); // reads DOM directly — no snapshot needed here
-  const grandSub=R2(lines.reduce((s,l)=>s+l.subtotal,0));
-  const v=calcVAT(grandSub);
+  const grandSub=R2(lines.reduce((sum,l)=>sum+l.subtotal,0));
+  const noVat=!!document.getElementById('qNoVat')?.checked;
+  const v=noVat
+    ? {base:grandSub,vat:0,nhil:0,getf:0,total:grandSub,totalLevy:0}
+    : calcVAT(grandSub);
   lines.forEach(l=>{const el=document.getElementById(l.id+'_qtotal');if(el)el.value=N(l.subtotal);});
   const gs=document.getElementById('qGrandSub');const gv=document.getElementById('qGrandVat');const gt=document.getElementById('qGrandTotal');
   if(gs)gs.textContent=GHS(grandSub);
-  if(gv)gv.textContent=GHS(v.totalLevy);
+  if(gv)gv.textContent=noVat?'No VAT':GHS(v.totalLevy);
   if(gt)gt.textContent=GHS(v.total);
 }
+
 function refreshQuoteLineStaff(){calcQuoteGrand();}
 
 function updateJobLineMedia(lineId){
@@ -2733,21 +2742,26 @@ async function saveQuote(){
   if(!lines.length)return toastErr('Please add at least one item to the quotation.');
   if(lines.find(l=>!l.desc||!l.unitPrice))return toastErr('Please fill in description and price for all items.');
   const grandSub=R2(lines.reduce((sum,l)=>sum+l.subtotal,0));
-  const v=calcVAT(grandSub);
+  const noVat=!!document.getElementById('qNoVat')?.checked;
+  const v=noVat?{base:grandSub,vat:0,nhil:0,getf:0,total:grandSub,totalLevy:0}:calcVAT(grandSub);
   const quoteNo=await nextRef('QT','QT-'+PAD(db.quoteCtr++));
   const cust=findCustomerByName(cl);
   const branch=document.getElementById('qBr').value;
-  const qrow={quote_no:quoteNo,customer_id:cust?.id||null,customer_name:cl,customer_phone:sanitise(document.getElementById('qPh').value),branch_name:branch,quote_date:TODAY(),valid_until:document.getElementById('qVd').value||null,status:'Draft',notes:sanitise(document.getElementById('qNo').value),subtotal:grandSub,vat_amount:v.vat,nhil_amount:v.nhil,getfund_amount:v.getf,total:v.total,amount_paid:0,prepared_by_id:currentUser?.id||null,prepared_by:currentUser?.name||''};
+  const qrow={quote_no:quoteNo,customer_id:cust?.id||null,customer_name:cl,customer_phone:sanitise(document.getElementById('qPh').value),branch_name:branch,quote_date:TODAY(),valid_until:document.getElementById('qVd').value||null,status:'Draft',notes:sanitise(document.getElementById('qNo').value),subtotal:grandSub,vat_amount:v.vat,nhil_amount:v.nhil,getfund_amount:v.getf,total:v.total,amount_paid:0,prepared_by_id:currentUser?.id||null,prepared_by:currentUser?.name||'',no_vat:noVat};
   const saved=await sbInsert('quotations',qrow);
   if(!saved)return toastErr('Quotation was not saved to Supabase.');
-  const itemRows=lines.map((l,i)=>({quotation_id:saved.id,line_number:i+1,description:l.desc,service_type:l.type,qty:l.qty,unit_price:l.unitPrice,media:l.media||null,finishing:l.finishing||l.note||null,sort_order:i}));
-  await sbInsertMany('quotation_items',itemRows);
-  const q={id:saved.id,quoteNo,date:TODAY(),client:cl,phone:qrow.customer_phone,whatsapp:sanitise(document.getElementById('qWA').value),lines:lines.map(l=>({type:l.type,desc:l.desc,qty:l.qty,unitPrice:l.unitPrice,subtotal:l.subtotal,note:l.note,media:l.media,finishing:l.finishing})),type:lines.map(l=>l.type).join(', '),desc:lines.map(l=>l.desc).join('; '),qty:lines.reduce((sum,l)=>sum+l.qty,0),unitPrice:lines.length===1?lines[0].unitPrice:0,subtotal:grandSub,vat:v.totalLevy,total:v.total,branch,validUntil:qrow.valid_until,notes:qrow.notes,status:'Draft',amountPaid:0,payments:[]};
+  const itemRows=lines.map((l,i)=>({quotation_id:saved.id,line_number:i+1,description:l.desc,service_type:l.type,qty:l.qty,unit_price:l.unitPrice,subtotal:l.subtotal,media:l.media||null,finishing:l.finishing||l.note||null,sort_order:i}));
+  const savedItems=await sbInsertMany('quotation_items',itemRows);
+  if(!savedItems || savedItems.length!==itemRows.length) console.warn('Some quotation items may not have saved. Check quotation_items policy/columns.');
+  const q={id:saved.id,quoteNo,date:TODAY(),client:cl,phone:qrow.customer_phone,whatsapp:sanitise(document.getElementById('qWA').value),lines:lines.map(l=>({type:l.type,desc:l.desc,qty:l.qty,unitPrice:l.unitPrice,subtotal:l.subtotal,note:l.note,media:l.media,finishing:l.finishing})),type:lines.map(l=>l.type).join(', '),desc:lines.map(l=>l.desc).join('; '),qty:lines.reduce((sum,l)=>sum+l.qty,0),unitPrice:lines.length===1?lines[0].unitPrice:0,subtotal:grandSub,vat:v.totalLevy,total:v.total,branch,validUntil:qrow.valid_until,notes:qrow.notes,status:'Draft',amountPaid:0,payments:[],noVat:noVat};
   db.quotations.push(q);
-  auditLog('quotation',`Quotation created: ${quoteNo} for ${cl}`,`${lines.length} item(s) | Total: ${GHS(v.total)} | Branch: ${branch}`,quoteNo);
+  auditLog('quotation',`Quotation created: ${quoteNo} for ${cl}`,`${lines.length} item(s) | Total: ${GHS(v.total)} | Branch: ${branch}${noVat?' | No VAT':''}`,quoteNo);
   saveDB();closeM('mQuote');rQuotes();rDash();toastOk(`Quotation ${quoteNo} saved.`);
   ['qCl','qPh','qWA','qNo'].forEach(x=>document.getElementById(x).value='');
+  const qNoVat=document.getElementById('qNoVat'); if(qNoVat) qNoVat.checked=false;
+  _quoteLines=[];renderQuoteLines();
 }
+
 function rQuotes(f,_,st){
   if(f!==undefined)_qF.search=f.toLowerCase();
   if(st!==undefined)_qF.status=st;
@@ -2777,30 +2791,70 @@ function rQuotes(f,_,st){
     </td></tr>`).join(''):'<tr><td colspan="10" style="text-align:center;color:var(--faint);padding:28px">No quotations yet.</td></tr>';
 }
 // ── Quote → Job Assignment Modal ──
+function roleKey(v){
+  return String(v||'').toLowerCase().replace(/\s+/g,'_');
+}
+function isProductionRole(v){
+  const r=roleKey(v);
+  return r==='production'||r==='production_staff'||r==='productionstaff';
+}
+function isCsoLikeRole(v){
+  const r=roleKey(v);
+  return ['cso','manager','ceo','sysadmin','super_admin','super'].includes(r);
+}
+function quoteNoVat(q){
+  return !!(q?.noVat || q?.no_vat || (Number(q?.vat||0)===0 && Number(q?.total||0)===Number(q?.subtotal||0)));
+}
+function safeQuoteLines(q){
+  const lines=(q?.lines||[]).filter(l=>l && (l.desc||l.description||l.type||l.service_type));
+  if(lines.length){
+    return lines.map(l=>({
+      type:l.type||l.service_type||'Printing Services',
+      desc:l.desc||l.description||q.desc||'Printing Services',
+      qty:safeNum(l.qty,1)||1,
+      unitPrice:safeNum(l.unitPrice??l.unit_price, safeNum(l.subtotal,0)),
+      subtotal:safeNum(l.subtotal, safeNum(l.qty,1)*safeNum(l.unitPrice??l.unit_price,0)),
+      note:l.note||l.finishing||'',
+      media:l.media||'',
+      finishing:l.finishing||l.note||''
+    }));
+  }
+  return [{
+    type:q.type||'Printing Services',
+    desc:q.desc||q.notes||'Printing Services',
+    qty:safeNum(q.qty,1)||1,
+    unitPrice:safeNum(q.unitPrice, safeNum(q.subtotal,0)),
+    subtotal:safeNum(q.subtotal, safeNum(q.total,0)),
+    note:q.notes||'',media:q.media||'',finishing:q.finishing||''
+  }];
+}
+// ── Quote → Job Assignment Modal ──
 function openConvertModal(id){
   const q=db.quotations.find(x=>x.id===id);
   if(!q)return;
   if(q.status==='Converted'){toastErr(`${q.quoteNo} is already Converted — find it in Job Orders.`);return;}
 
-  // Populate header info
+  const noVat=quoteNoVat(q);
+  const qSubtotal=R2(q.subtotal||0);
+  const qTotal=noVat?qSubtotal:R2(q.total||calcVAT(qSubtotal).total);
+
   document.getElementById('convQuoteId').value=id;
   document.getElementById('convQuoteRef').textContent=q.quoteNo+' — '+q.date;
   document.getElementById('convClient').textContent=q.client;
   document.getElementById('convBranch').textContent=q.branch;
-  document.getElementById('convTotal').textContent=GHS(q.total);
+  document.getElementById('convTotal').innerHTML=`${GHS(qTotal)}${noVat?'<div style="font-size:10px;color:var(--muted);font-weight:600">No VAT</div>':''}`;
 
-  // Populate CSO dropdown
-  const csoStaff=db.staff.filter(s=>(s.role==='CSO'||s.role==='Manager'||s.role==='CEO')&&(!myBranch()||s.branch===q.branch||s.branch==='All'));
-  document.getElementById('convPreparedBy').innerHTML=csoStaff.map(s=>`<option>${s.name}</option>`).join('');
+  const csoStaff=db.staff.filter(s=>isCsoLikeRole(s.role)&&(!myBranch()||s.branch===q.branch||s.branch==='All'));
+  let csoOpts=csoStaff.map(s=>`<option${s.name===currentUser?.name?' selected':''}>${s.name}</option>`).join('');
+  if(currentUser?.name && !csoStaff.some(s=>s.name===currentUser.name)) csoOpts=`<option selected>${currentUser.name}</option>`+csoOpts;
+  document.getElementById('convPreparedBy').innerHTML=csoOpts || `<option>${currentUser?.name||'CSO'}</option>`;
   if(currentUser?.name)try{document.getElementById('convPreparedBy').value=currentUser.name;}catch(e){}
 
-  // Default due date = 3 days from today
   const dd=new Date();dd.setDate(dd.getDate()+3);
   document.getElementById('convDueDate').value=dd.toISOString().slice(0,10);
 
-  // Build line items
-  const quoteLines=q.lines&&q.lines.length?q.lines:[{type:q.type,desc:q.desc,qty:q.qty,unitPrice:q.unitPrice,subtotal:q.subtotal,note:''}];
-  const branchStaff=db.staff.filter(s=>s.role==='Production Staff'&&(!myBranch()||s.branch===q.branch));
+  const quoteLines=safeQuoteLines(q);
+  const branchStaff=db.staff.filter(s=>isProductionRole(s.role)&&(s.branch===q.branch||s.branch==='All'));
   const staffOpts=branchStaff.map(s=>`<option>${s.name}</option>`).join('');
 
   document.getElementById('convLinesContainer').innerHTML=quoteLines.map((l,i)=>`
@@ -2818,7 +2872,7 @@ function openConvertModal(id){
       <div class="fgrid g2">
         <div class="fg">
           <label class="fl">Assign to Production Staff *</label>
-          <select class="fc" id="conv_staff_${i}">${staffOpts||'<option>No staff available</option>'}</select>
+          <select class="fc" id="conv_staff_${i}">${staffOpts||'<option value="">No staff available</option>'}</select>
         </div>
         <div class="fg">
           <label class="fl">Deadline for this item</label>
@@ -2831,13 +2885,12 @@ function openConvertModal(id){
         <div class="fg">
           <label class="fl">Finishing</label>
           <select class="fc" id="conv_finish_${i}">
-            ${['SPACE','TRIMMING','N/A','SAV on 10mm ABS','5mm ABS Hard','Pressing on shirt','Lamination','Binding','Other'].map(f=>`<option${l.note&&l.note.includes(f)?' selected':''}>${f}</option>`).join('')}
+            ${['SPACE','TRIMMING','N/A','SAV on 10mm ABS','5mm ABS Hard','Pressing on shirt','Lamination','Binding','Other'].map(f=>`<option${(l.finishing||l.note||'').includes(f)?' selected':''}>${f}</option>`).join('')}
           </select>
         </div>
       </div>
     </div>`).join('');
 
-  if(_sbUrl&&_sbKey)pullFromSupabase().catch(()=>{});
   openM('mConvertJob');
 }
 
@@ -2856,9 +2909,10 @@ async function applyConvertToJob(){
   const preparedBy=document.getElementById('convPreparedBy').value;
   const preparedStaff=findStaffByName(preparedBy);
   const dueDate=document.getElementById('convDueDate').value;
-  const v=calcVAT(q.subtotal);
+  const noVat=quoteNoVat(q);
+  const v=noVat?{base:R2(q.subtotal||0),vat:0,nhil:0,getf:0,total:R2(q.subtotal||0),totalLevy:0}:calcVAT(q.subtotal);
   const orderNo=await nextRef('ORD','ORD-'+PAD(db.jobCtr++));
-  const quoteLines=q.lines&&q.lines.length?q.lines:[{type:q.type,desc:q.desc,qty:q.qty,unitPrice:q.unitPrice,subtotal:q.subtotal,note:''}];
+  const quoteLines=safeQuoteLines(q);
   for(let i=0;i<quoteLines.length;i++){
     const staff=document.getElementById(`conv_staff_${i}`)?.value;
     if(!staff){toastErr(`Please assign a production staff member to Item ${i+1}.`);return;}
@@ -2873,15 +2927,15 @@ async function applyConvertToJob(){
     const deadline=document.getElementById(`conv_deadline_${i}`)?.value?.trim()||'';
     const itemNotes=document.getElementById(`conv_notes_${i}`)?.value?.trim()||l.note||'';
     const finishing=document.getElementById(`conv_finish_${i}`)?.value||l.finishing||'SPACE';
-    const row={job_no:jobNo,order_no:orderNo,quotation_id:q.id,customer_id:findCustomerByName(q.client)?.id||null,customer_name:q.client,customer_phone:q.phone||'',branch_name:q.branch,job_date:TODAY(),due_date:dueDate||null,service_type:l.type,description:l.desc,qty:l.qty,unit_price:l.unitPrice,media:l.media||null,finishing,status:'Pending',payment_status:'Unpaid',amount_paid:0,assigned_to_id:assignedStaff?.id||null,assigned_to:assignedTo,prepared_by_id:preparedStaff?.id||currentUser?.id||null,prepared_by:preparedBy,notes:`From ${q.quoteNo}${itemNotes?' — '+itemNotes:''}${deadline?' | Deadline: '+deadline:''}`,is_order_header:i===0,line_index:i,created_by_id:currentUser?.id||null};
+    const row={job_no:jobNo,order_no:orderNo,quotation_id:q.id,customer_id:findCustomerByName(q.client)?.id||null,customer_name:q.client,customer_phone:q.phone||'',branch_name:q.branch,job_date:TODAY(),due_date:dueDate||null,service_type:l.type,description:l.desc,qty:l.qty,unit_price:l.unitPrice,media:l.media||null,finishing,status:'Pending',payment_status:'Unpaid',amount_paid:0,assigned_to_id:assignedStaff?.id||null,assigned_to:assignedTo,prepared_by_id:preparedStaff?.id||currentUser?.id||null,prepared_by:preparedBy,notes:`From ${q.quoteNo}${itemNotes?' — '+itemNotes:''}${deadline?' | Deadline: '+deadline:''}`,is_order_header:i===0,line_index:i,created_by_id:currentUser?.id||null,no_vat:noVat};
     const saved=await sbInsert('jobs',row);
     if(!saved)return toastErr('Job order was not saved to Supabase.');
-    created.push({id:saved.id,jobNo,orderNo,date:TODAY(),client:q.client,phone:q.phone,type:l.type,desc:l.desc,qty:l.qty,unitPrice:l.unitPrice,subtotal:l.subtotal,vat:i===0?v.totalLevy:0,total:i===0?v.total:l.subtotal,finishing,assignedTo,preparedBy,branch:q.branch,dueDate,deadline,notes:row.notes,status:'Pending',paid:false,paymentStatus:'Unpaid',amountPaid:0,payments:[],isLineItem:!isOnly,lineIndex:i+1,totalLines:quoteLines.length,isOrderHeader:i===0,statusLog:[{status:'Pending',ts:new Date().toISOString(),by:preparedBy}]});
+    created.push({id:saved.id,jobNo,orderNo,date:TODAY(),client:q.client,phone:q.phone,type:l.type,desc:l.desc,qty:l.qty,unitPrice:l.unitPrice,subtotal:l.subtotal,vat:i===0?v.totalLevy:0,total:i===0?v.total:l.subtotal,finishing,assignedTo,preparedBy,branch:q.branch,dueDate,deadline,notes:row.notes,status:'Pending',paid:false,paymentStatus:'Unpaid',amountPaid:0,payments:[],noVat:noVat,isLineItem:!isOnly,lineIndex:i+1,totalLines:quoteLines.length,isOrderHeader:i===0,statusLog:[{status:'Pending',ts:new Date().toISOString(),by:preparedBy}]});
   }
   db.jobs.push(...created);
   await sbUpdate('quotations',q.id,{status:'Converted',converted_to_job_id:created[0]?.id||null});
   q.status='Converted';
-  auditLog('job',`Job Order created from ${q.quoteNo}`,`Order: ${orderNo} | Client: ${q.client} | Items: ${quoteLines.length} | Total: ${GHS(v.total)}`,orderNo);
+  auditLog('job',`Job Order created from ${q.quoteNo}`,`Order: ${orderNo} | Client: ${q.client} | Items: ${quoteLines.length} | Total: ${GHS(v.total)}${noVat?' | No VAT':''}`,orderNo);
   saveDB();closeM('mConvertJob');rQuotes();rJobs({});rDash();toastOk(`Job Order${quoteLines.length>1?'s ('+quoteLines.length+')':''} created: ${orderNo}`);
 }
 
@@ -3122,7 +3176,8 @@ function showInvoiceModal(jobId,quoteObj){
   else{data=db.jobs.find(j=>j.id===jobId);if(!data)return;document.getElementById('invTitle').textContent=`Invoice — ${data.jobNo}`;}
   _currentInvData=data;_currentInvIsJob=!quoteObj;
   const isJob=!quoteObj;
-  const noVat=document.getElementById('noVatToggle')?.checked||false;
+  const noVat=!!(data.noVat||data.no_vat||document.getElementById('noVatToggle')?.checked);
+  const noVatBox=document.getElementById('noVatToggle'); if(noVatBox) noVatBox.checked=noVat;
   // Sum all line items for multi-line orders
   const allOrderItems=data.orderNo?db.jobs.filter(j=>j.orderNo===data.orderNo):null;
   const orderSubtotal=allOrderItems&&allOrderItems.length>1?
@@ -3141,7 +3196,7 @@ function showInvoiceModal(jobId,quoteObj){
   const _orderSubtotal=_orderJobs&&_orderJobs.length>1?
     R2(_orderJobs.reduce((s,j)=>s+(j.subtotal||0),0)):
     (data.subtotal||0);
-  const _vForBalance=isJob?calcVAT(_orderSubtotal):{total:data.total||0};
+  const _vForBalance=isJob?(noVat?{total:_orderSubtotal}:calcVAT(_orderSubtotal)):{total:data.total||0};
   const _trueTotal=isJob?_vForBalance.total:(data.total||0);
   const balance=R2(_trueTotal-amtPaid);
   // CRITICAL: Check BOTH the paid flag AND that the actual balance is zero
@@ -4092,7 +4147,7 @@ async function loadAllData() {
 
     // Map to the shape the existing UI code expects
     db.customers   = (customers || []).map(mapCustomer);
-    db.quotations  = (quotations||[]).map(q => { const mapped=mapQuotation(q); const items=(quoteItems||[]).filter(i=>i.quotation_id===q.id); mapped.lines=items.map(i=>({type:i.service_type,desc:i.description,qty:parseFloat(i.qty||0),unitPrice:parseFloat(i.unit_price||0),subtotal:parseFloat(i.subtotal||0),media:i.media,finishing:i.finishing,note:i.finishing||''})); if(mapped.lines.length){mapped.type=mapped.lines.map(l=>l.type).join(', '); mapped.desc=mapped.lines.map(l=>l.desc).join('; '); mapped.qty=mapped.lines.reduce((s,l)=>s+l.qty,0); mapped.unitPrice=mapped.lines.length===1?mapped.lines[0].unitPrice:0;} return mapped; });
+    db.quotations  = (quotations||[]).map(q => { const mapped=mapQuotation(q); const items=(quoteItems||[]).filter(i=>i.quotation_id===q.id); mapped.lines=items.map(i=>({type:i.service_type||i.type||'Printing Services',desc:i.description||i.desc||mapped.desc||'Printing Services',qty:parseFloat(i.qty||i.quantity||1),unitPrice:parseFloat(i.unit_price||i.unitPrice||0),subtotal:parseFloat(i.subtotal||0),media:i.media||'',finishing:i.finishing||'',note:i.finishing||i.note||''})); if(mapped.lines.length){mapped.type=mapped.lines.map(l=>l.type).join(', '); mapped.desc=mapped.lines.map(l=>l.desc).join('; '); mapped.qty=mapped.lines.reduce((s,l)=>s+l.qty,0); mapped.unitPrice=mapped.lines.length===1?mapped.lines[0].unitPrice:0;} return mapped; });
     db.jobs        = (jobs||[]).map(mapJob);
     db.sales       = (sales||[]).map(mapSale);
     db.expenses    = (expenses||[]).map(mapExpense);
@@ -4258,7 +4313,7 @@ function mapJob(j) {
     amountPaid: parseFloat(j.amount_paid||0),
     assignedTo: j.assigned_to, preparedBy: j.prepared_by,
     notes: j.notes, isOrderHeader: j.is_order_header,
-    lineIndex: j.line_index, payments: []
+    lineIndex: j.line_index, payments: [], noVat: !!j.no_vat
   };
 }
 
@@ -4272,7 +4327,7 @@ function mapQuotation(q) {
     vat: parseFloat(q.vat_amount||0),
     total: parseFloat(q.total||0),
     amountPaid: parseFloat(q.amount_paid||0),
-    preparedBy: q.prepared_by, lines: [], payments: []
+    preparedBy: q.prepared_by, lines: [], payments: [], noVat: !!q.no_vat, desc: q.description || q.notes || '', type: q.service_type || 'Printing Services'
   };
 }
 
