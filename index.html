@@ -1605,23 +1605,60 @@ function numToWords(n){
 }
 
 // ── JOB UPDATE / REASSIGNMENT PERMISSION ──
-// Production staff can only update jobs assigned to them.
-// CSO can reassign jobs they created/handle in their branch, before completion.
-// Manager/Admin can reassign any non-completed job.
+// Workflow rules:
+// CSO: create/assign/reassign; Returned to CSO -> Ready for Pickup; Ready for Pickup -> Completed.
+// Production: only their assigned jobs; Pending -> In Production -> Quality Check.
+// Manager/QC/Admin: Quality Check -> Returned to CSO or back to In Production; admin can override.
+function jobAssigneeName(job){ return String(job?.assignedTo || job?.assigned_to || '').trim(); }
+function isAssignedToCurrentUser(job){
+  return jobAssigneeName(job).toLowerCase() === String(currentUser?.name||'').trim().toLowerCase();
+}
+function isAdminLikeRole(r){
+  r=normaliseRole(r||'');
+  return ['super','super_admin','sysadmin'].includes(r);
+}
+function isManagerLikeRole(r){
+  r=normaliseRole(r||'');
+  return ['manager','qc','quality_check','quality_control'].includes(r);
+}
+function isCsoRole(r){ return normaliseRole(r||'')==='cso'; }
 function canUpdateJob(job){
-  if(!currentUser)return false;
+  if(!currentUser || !job)return false;
   const r=normaliseRole(currentUser.role||'');
+  if(isAdminLikeRole(r))return true;
+  if(isProductionRole(r))return isAssignedToCurrentUser(job);
+  if(isManagerLikeRole(r))return branchMatches(branchOf(job), myBranch()) || myBranch()==='All';
+  if(isCsoRole(r))return branchMatches(branchOf(job), myBranch()) || myBranch()==='All';
+  return false;
+}
+function allowedNextStatuses(job){
+  const r=normaliseRole(currentUser?.role||'');
+  const current=job?.status||'Pending';
+  if(isAdminLikeRole(r))return ['Pending','In Production','Quality Check','Returned to CSO','Ready for Pickup','Completed','Cancelled'];
   if(isProductionRole(r)){
-    return (job.assignedTo||'').toLowerCase()===(currentUser.name||'').toLowerCase();
+    if(!isAssignedToCurrentUser(job))return [];
+    if(current==='Pending')return ['In Production'];
+    if(current==='In Production')return ['Quality Check'];
+    return [];
   }
-  return true;
+  if(isManagerLikeRole(r)){
+    if(current==='Quality Check')return ['Returned to CSO','In Production'];
+    return [];
+  }
+  if(isCsoRole(r)){
+    if(current==='Returned to CSO')return ['Ready for Pickup'];
+    if(current==='Ready for Pickup')return ['Completed'];
+    return [];
+  }
+  return [];
 }
 function canReassignJob(job){
   if(!currentUser || !job)return false;
   const r=normaliseRole(currentUser.role||'');
   if(['Completed','Cancelled'].includes(job.status))return false;
-  if(['super','super_admin','sysadmin','manager','ceo','owner'].includes(r))return true;
-  if(r==='cso')return branchMatches(branchOf(job), myBranch());
+  // CSO owns assignment/re-assignment in their branch. Admin can override.
+  if(isAdminLikeRole(r))return true;
+  if(isCsoRole(r))return branchMatches(branchOf(job), myBranch()) || myBranch()==='All';
   return false;
 }
 
@@ -3192,22 +3229,27 @@ function rJobs(f={}){
 }
 function openStat(id,st,client,phone){
   const _j=db.jobs.find(x=>x.id===id);
-  if(_j&&!canUpdateJob(_j)){
-    toastErr('You can only update jobs assigned to you.');
-    return;
+  if(!_j)return;
+  const allowed=allowedNextStatuses(_j);
+  if(!allowed.length){
+    const r=normaliseRole(currentUser?.role||'');
+    if(isProductionRole(r)) return toastErr('Only the assigned production staff can move this job through production.');
+    if(isCsoRole(r)) return toastErr('CSO can only move jobs from Returned to CSO -> Ready for Pickup -> Completed.');
+    if(isManagerLikeRole(r)) return toastErr('Manager/QC can only update jobs at Quality Check stage.');
+    return toastErr('You are not allowed to update this job status.');
   }
   document.getElementById('statJobId').value=id;
-  document.getElementById('newStat').value=st;
+  const sel=document.getElementById('newStat');
+  sel.innerHTML=allowed.map(x=>`<option value="${x}">${x}</option>`).join('');
+  sel.value=allowed[0];
   document.getElementById('waMsg').style.display='none';
-  document.getElementById('newStat').onchange=function(){
+  sel.onchange=function(){
     const ns=this.value;
     if(ns==='Ready for Pickup'&&phone){
       const msg=encodeURIComponent(`Hello ${client}, your job at Glyphs Company Limited is ready for pickup! Please visit our branch at your earliest convenience. Thank you.`);
-      // Use customer WhatsApp number if available, fall back to phone
       const _custWA=db.customers.find(c=>c.name===client);
       const _waPhone=(_custWA?.whatsapp||phone||'').replace(/\D/g,'').replace(/^0/,'233');
       const num=_waPhone;
-      // Find customer for email
       const cust=db.customers.find(c=>c.name===client);
       const custEmail=cust?.email||'';
       const emailSubj=encodeURIComponent('Your Glyphs Order is Ready for Pickup');
@@ -3221,17 +3263,22 @@ function openStat(id,st,client,phone){
       document.getElementById('waMsg').style.display='block';
     }else{document.getElementById('waMsg').style.display='none';}
   };
+  sel.onchange();
   openM('mStatus');
 }
 async function applyStatus(){
   const id=document.getElementById('statJobId').value, st=document.getElementById('newStat').value;
   const j=db.jobs.find(x=>x.id===id); if(!j)return;
+  const allowed=allowedNextStatuses(j);
+  if(!allowed.includes(st))return toastErr('This status change is not allowed for your role.');
   const old=j.status;
   const row={status:st};
   if(st==='Completed') row.payment_status = j.paymentStatus || (j.paid?'Paid':'Unpaid');
   const ok=await sbUpdate('jobs',id,row);
   if(!ok)return toastErr('Status was not saved to Supabase.');
-  await sbInsert('job_status_history',{job_id:id,from_status:old,to_status:st,changed_by_id:currentUser?.id||null,changed_by:currentUser?.name||'',notes:null});
+  try{
+    await sbInsert('job_status_history',{job_id:id,from_status:old,to_status:st,changed_by_id:currentUser?.id||null,changed_by:currentUser?.name||'',notes:null});
+  }catch(e){console.warn('Status history not saved:',e);}
   j.status=st; if(st==='Completed')j.paid=true;
   if(!j.statusLog)j.statusLog=[];
   j.statusLog.push({status:st,ts:new Date().toISOString(),by:currentUser?.name||'',from:old});
@@ -3265,15 +3312,18 @@ async function applyReassign(){
   const newStaff=document.getElementById('reassignStaff').value;
   const j=db.jobs.find(x=>x.id===id);
   if(!j)return;
-  if(!canReassignJob(j))return toastErr('You are not allowed to re-assign this job.');
+  if(!canReassignJob(j))return toastErr('Only CSO/Admin can re-assign this job before completion.');
   if(!newStaff)return toastErr('Select a production staff member.');
-  const oldStaff=j.assignedTo||'';
+  const oldStaff=jobAssigneeName(j);
   if(oldStaff===newStaff)return toastErr('This job is already assigned to that staff member.');
   const staff=findStaffByName(newStaff);
-  const row={assigned_to:newStaff,assigned_to_id:staff?.id||null};
+  const row={assigned_to:newStaff};
+  // Only send assigned_to_id when it is a real UUID. Fallback staff ids like prod-kofi-nk break Supabase UUID columns.
+  if(staff?.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(staff.id))){
+    row.assigned_to_id=staff.id;
+  }
   const ok=await sbUpdate('jobs',id,row);
   if(!ok)return toastErr('Re-assignment was not saved to Supabase.');
-  // Keep an audit trail, but do not block the re-assignment if the history table policy is not ready.
   try{
     await sbInsert('job_status_history',{
       job_id:id,
@@ -3286,7 +3336,7 @@ async function applyReassign(){
   }catch(e){console.warn('Reassignment history not saved:', e);}
   j.assignedTo=newStaff;
   j.assigned_to=newStaff;
-  j.assigned_to_id=staff?.id||null;
+  if(staff?.id)j.assigned_to_id=staff.id;
   if(!j.statusLog)j.statusLog=[];
   j.statusLog.push({status:j.status,ts:new Date().toISOString(),by:currentUser?.name||'',note:`Re-assigned from ${oldStaff||'Unassigned'} to ${newStaff}`});
   logActivity('status',`${j.jobNo} re-assigned from ${oldStaff||'Unassigned'} to ${newStaff}`);
@@ -4401,6 +4451,10 @@ async function sbUpdate(table, id, data) {
     headers: sbHeaders({'Prefer':'return=minimal'}),
     body: JSON.stringify(data)
   });
+  if(!r.ok){
+    const txt=await r.text().catch(()=>`HTTP ${r.status}`);
+    console.error(`sbUpdate ${table}:`, txt, data);
+  }
   return r.ok;
 }
 
