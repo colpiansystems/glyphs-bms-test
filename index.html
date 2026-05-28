@@ -2149,6 +2149,12 @@ function myBranch(){
 function branchOf(x){
   return (x?.branch || x?.branch_name || x?.branchName || '').trim();
 }
+function branchMatches(a,b){
+  const av=String(a||'').trim().toLowerCase();
+  const bv=String(b||'').trim().toLowerCase();
+  if(!bv || bv==='all') return true;
+  return av===bv || av==='all';
+}
 function filterByBranch(arr,field='branch'){
   const b=myBranch();
   if(!b) return arr;
@@ -2230,8 +2236,8 @@ function prepJobModal(){
   addJobLine(); // start with one line
   updClientList();
   const _jbr=myBranch()||document.getElementById('branchSel').value||'Awoshie';
-  const _prodStaff=db.staff.filter(s=>(s.role==='Production Staff'||s.role==='production staff'||s.role?.toLowerCase()==='production staff')&&s.branch===_jbr);
-  const _csoStaff=db.staff.filter(s=>(s.role==='CSO'||s.role==='Manager'||s.role==='CEO'||s.role==='Finance Officer')&&(s.branch===_jbr||s.branch==='All'));
+  const _prodStaff=db.staff.filter(s=>isProductionRole(s.role)&&branchMatches(branchOf(s),_jbr));
+  const _csoStaff=db.staff.filter(s=>isCsoLikeRole(s.role)&&branchMatches(branchOf(s),_jbr));
   document.getElementById('jAs').innerHTML=_prodStaff.length>0
     ? _prodStaff.map(s=>`<option>${s.name}</option>`).join('')
     : '<option value="">No production staff in this branch</option>';
@@ -2382,7 +2388,7 @@ function getStaffOptions(branch){
   const b=branch||document.getElementById('jBr')?.value||myBranch()||'Awoshie';
   // Filter: always show staff from the specified branch
   return db.staff
-    .filter(s=>s.role==='Production Staff'&&s.branch===b)
+    .filter(s=>isProductionRole(s.role)&&branchMatches(branchOf(s),b))
     .map(s=>`<option>${s.name}</option>`)
     .join('');
 }
@@ -2861,7 +2867,7 @@ function openConvertModal(id){
   document.getElementById('convBranch').textContent=q.branch;
   document.getElementById('convTotal').innerHTML=`${GHS(qTotal)}${noVat?'<div style="font-size:10px;color:var(--muted);font-weight:600">No VAT</div>':''}`;
 
-  const csoStaff=db.staff.filter(s=>isCsoLikeRole(s.role)&&(!myBranch()||s.branch===q.branch||s.branch==='All'));
+  const csoStaff=db.staff.filter(s=>isCsoLikeRole(s.role)&&branchMatches(branchOf(s),q.branch));
   let csoOpts=csoStaff.map(s=>`<option${s.name===currentUser?.name?' selected':''}>${s.name}</option>`).join('');
   if(currentUser?.name && !csoStaff.some(s=>s.name===currentUser.name)) csoOpts=`<option selected>${currentUser.name}</option>`+csoOpts;
   document.getElementById('convPreparedBy').innerHTML=csoOpts || `<option>${currentUser?.name||'CSO'}</option>`;
@@ -2871,7 +2877,7 @@ function openConvertModal(id){
   document.getElementById('convDueDate').value=dd.toISOString().slice(0,10);
 
   const quoteLines=safeQuoteLines(q);
-  const branchStaff=db.staff.filter(s=>isProductionRole(s.role)&&(s.branch===q.branch||s.branch==='All'));
+  const branchStaff=db.staff.filter(s=>isProductionRole(s.role)&&branchMatches(branchOf(s),q.branch));
   const staffOpts=branchStaff.map(s=>`<option>${s.name}</option>`).join('');
 
   document.getElementById('convLinesContainer').innerHTML=quoteLines.map((l,i)=>`
@@ -3167,7 +3173,7 @@ function openReassign(jobId,currentAssignee,client,jobNo){
   document.getElementById('reassignJobId').value=jobId;
   document.getElementById('reassignJobInfo').textContent=`Job: ${jobNo} — ${client} | Currently: ${currentAssignee}`;
   const b=myBranch()||(db.jobs.find(j=>j.id===jobId)?.branch)||'Awoshie';
-  const prodStaff=db.staff.filter(s=>s.role==='Production Staff'&&(!myBranch()||s.branch===b));
+  const prodStaff=db.staff.filter(s=>isProductionRole(s.role)&&branchMatches(branchOf(s),b));
   document.getElementById('reassignStaff').innerHTML=prodStaff.map(s=>`<option${s.name===currentAssignee?' selected':''}>${s.name}</option>`).join('');
   openM('mReassign');
 }
@@ -4149,7 +4155,7 @@ async function loadAllData() {
   try {
     // Parallel fetch of all tables the user has access to
     const [customers, quotations, quoteItems, jobs, sales, expenses, pettyCash,
-           settings, serviceTypes] = await Promise.all([
+           settings, serviceTypes, branches, profiles] = await Promise.all([
       sbGet('customers?select=*&is_active=eq.true&order=name'),
       sbGet('quotations?select=*&order=created_at.desc&limit=500'),
       sbGet('quotation_items?select=*&order=line_number'),
@@ -4158,7 +4164,9 @@ async function loadAllData() {
       sbGet('expenses?select=*&order=expense_date.desc&limit=500'),
       sbGet('petty_cash?select=*&order=request_date.desc&limit=200'),
       sbGet('settings?select=key,value'),
-      sbGet('service_types?select=name&is_active=eq.true&order=sort_order')
+      sbGet('service_types?select=name&is_active=eq.true&order=sort_order'),
+      sbGet('branches?select=id,name'),
+      sbGet('user_profiles?select=*&is_active=eq.true')
     ]);
 
     // Map to the shape the existing UI code expects
@@ -4204,13 +4212,18 @@ async function loadAllData() {
     db.gsUrl     = sMap.gs_url     || '';
 
     // Rebuild staff list from user_profiles for assignment dropdowns.
-    // CSOs need this too so they can assign jobs to production staff in their branch.
-    const profiles = await sbGet('user_profiles?select=*&is_active=eq.true');
+    // Supports both branch_name and branch_id, because this database stores user branch by branch_id.
+    const branchLookup = {};
+    (branches || []).forEach(b => { branchLookup[b.id] = b.name; });
     if (profiles && profiles.length) {
       db.staff = profiles.map(p => ({
-        id: p.id, name: p.full_name, role: p.role,
-        branch: p.branch_name || 'All', phone: p.phone || ''
-      }));
+        id: p.id,
+        name: p.full_name || p.name || '',
+        role: p.role || '',
+        branch: p.branch_name || p.branch || branchLookup[p.branch_id] || 'All',
+        branch_name: p.branch_name || p.branch || branchLookup[p.branch_id] || 'All',
+        phone: p.phone || ''
+      })).filter(s => s.name);
     }
 
     db._lastUpdated = Date.now();
