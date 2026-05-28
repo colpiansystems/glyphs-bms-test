@@ -2214,6 +2214,65 @@ function filterByBranch(arr,field='branch'){
     return v === b;
   });
 }
+function isCentralDashboardUser(){
+  const r=normaliseRole(currentUser?.role||'cso');
+  return ['super','super_admin','sysadmin','ceo','owner','manager','finance_officer'].includes(r);
+}
+function effectiveDashboardBranch(){
+  if(isCentralDashboardUser()) return _dashBranch==='All'?null:_dashBranch;
+  return myBranch();
+}
+function findQuoteForPayment(p){
+  if(!p) return null;
+  if(p.quotation_id) return db.quotations.find(q=>q.id===p.quotation_id)||null;
+  const qno=p.quote_no||p.quoteNo||p.ref||'';
+  return qno ? (db.quotations.find(q=>q.quoteNo===qno)||null) : null;
+}
+function findJobsForPayment(p){
+  if(!p) return [];
+  if(p.order_no||p.orderNo){
+    const on=p.order_no||p.orderNo;
+    return db.jobs.filter(j=>j.orderNo===on||j.order_no===on);
+  }
+  if(p.job_id) return db.jobs.filter(j=>j.id===p.job_id);
+  return [];
+}
+function paymentInvoiceMeta(p){
+  const q=findQuoteForPayment(p);
+  if(q) return {branch:branchOf(q),client:q.client,total:parseFloat(q.total||0)||0,subtotal:parseFloat(q.subtotal||0)||0,noVat:quoteNoVat(q)};
+  const js=findJobsForPayment(p);
+  if(js.length){
+    const t=jobOrderTotal(js);
+    const first=js[0]||{};
+    return {branch:branchOf(first),client:first.client,total:t.total,subtotal:t.subtotal,noVat:t.noVat};
+  }
+  return {branch:branchOf(p),client:p.customer||p.customer_name||p.client||'',total:0,subtotal:0,noVat:false};
+}
+function paymentBranch(p){return branchOf(p)||paymentInvoiceMeta(p).branch||'';}
+function paymentClient(p){return p.customer||p.customer_name||p.client||paymentInvoiceMeta(p).client||'Unknown Client';}
+function paymentAmount(p){return parseFloat(p.amount||p.credit||0)||0;}
+function paymentDateValue(p){return p.payment_date||p.date||p.created_at||TODAY();}
+function visiblePayments(branch){
+  const rows=Array.isArray(db.payments)?db.payments:[];
+  return branch?rows.filter(p=>branchMatches(paymentBranch(p),branch)):rows;
+}
+function paymentNetAmount(p){
+  const amt=paymentAmount(p);
+  const m=paymentInvoiceMeta(p);
+  if(!m || !m.total || m.noVat) return amt;
+  if(m.subtotal>0) return R2(amt*(m.subtotal/m.total));
+  const levyRate=(parseFloat(db.vatRate||15)+parseFloat(db.nhilRate||2.5)+parseFloat(db.getRate||2.5))/100;
+  return R2(amt/(1+levyRate));
+}
+function dashboardOutstanding(jobs){
+  const groups={};
+  (jobs||[]).filter(j=>j.status!=='Cancelled').forEach(j=>{const k=j.orderNo||j.jobNo||j.id;(groups[k]=groups[k]||[]).push(j);});
+  return Object.values(groups).reduce((sum,js)=>{
+    const t=jobOrderTotal(js).total;
+    const paid=paymentSum(js[0]?.payments||[]);
+    return sum+Math.max(0,R2(t-paid));
+  },0);
+}
 
 // ══ NAVIGATION ══
 const TITLES={dashboard:'Dashboard',customers:'Customers',quotations:'Quotations',jobs:'Job Orders',production:'Production Board',pettycash:'Petty Cash',ledger:'Sales & Expenses',reports:'Financial Reports',settings:'Settings'};
@@ -2816,7 +2875,7 @@ async function saveQuote(){
   const branch=document.getElementById('qBr').value;
   const qDesc=lines.map(l=>l.desc).filter(Boolean).join('; ');
   const qType=lines.map(l=>l.type).filter(Boolean).join(', ');
-  const qrow={quote_no:quoteNo,customer_id:cust?.id||null,customer_name:cl,customer_phone:sanitise(document.getElementById('qPh').value),branch_name:branch,branch:branch,quote_date:TODAY(),valid_until:document.getElementById('qVd').value||null,status:'Draft',notes:sanitise(document.getElementById('qNo').value),description:qDesc,service_type:qType,qty:lines.reduce((sum,l)=>sum+l.qty,0),unit_price:lines.length===1?lines[0].unitPrice:0,subtotal:grandSub,vat_amount:v.vat,nhil_amount:v.nhil,getfund_amount:v.getf,total:v.total,amount_paid:0,prepared_by_id:isUuid(currentUser?.id)?currentUser.id:null,prepared_by:currentUser?.name||'',no_vat:noVat,vat_enabled:!noVat};
+  const qrow={quote_no:quoteNo,customer_id:cust?.id||null,customer_name:cl,customer_phone:sanitise(document.getElementById('qPh').value),branch_name:branch,branch:branch,quote_date:TODAY(),valid_until:document.getElementById('qVd').value||null,status:'Draft',notes:sanitise(document.getElementById('qNo').value),description:qDesc,service_type:qType,qty:lines.reduce((sum,l)=>sum+l.qty,0),unit_price:lines.length===1?lines[0].unitPrice:0,subtotal:grandSub,vat_amount:v.vat,nhil_amount:v.nhil,getfund_amount:v.getf,total:v.total,amount_paid:0,prepared_by_id:currentUser?.id||null,prepared_by:currentUser?.name||'',no_vat:noVat,vat_enabled:!noVat};
   const saved=await sbInsert('quotations',qrow);
   if(!saved)return toastErr('Quotation was not saved to Supabase.');
   const itemRows=lines.map((l,i)=>({quotation_id:saved.id,line_number:i+1,description:l.desc,service_type:l.type,qty:l.qty,unit_price:l.unitPrice,media:l.media||null,finishing:l.finishing||l.note||null,notes:l.note||'',no_vat:noVat,sort_order:i}));
@@ -2862,9 +2921,6 @@ function rQuotes(f,_,st){
 // ── Quote → Job Assignment Modal ──
 function roleKey(v){
   return String(v||'').toLowerCase().replace(/\s+/g,'_');
-}
-function isUuid(v){
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(v||''));
 }
 function isProductionRole(v){
   const r=roleKey(v);
@@ -3062,7 +3118,7 @@ async function applyConvertToJob(){
     const deadline=document.getElementById(`conv_deadline_${i}`)?.value?.trim()||'';
     const itemNotes=document.getElementById(`conv_notes_${i}`)?.value?.trim()||l.note||'';
     const finishing=document.getElementById(`conv_finish_${i}`)?.value||l.finishing||'SPACE';
-    const row={job_no:jobNo,order_no:orderNo,quotation_id:q.id,customer_id:findCustomerByName(q.client)?.id||null,customer_name:q.client,customer_phone:q.phone||'',branch_name:q.branch,job_date:TODAY(),due_date:dueDate||null,service_type:l.type,description:l.desc,qty:l.qty,unit_price:l.unitPrice,media:l.media||null,finishing,status:'Pending',payment_status:'Unpaid',amount_paid:0,assigned_to_id:isUuid(assignedStaff?.id)?assignedStaff.id:null,assigned_to:assignedTo,prepared_by_id:isUuid(preparedStaff?.id)?preparedStaff.id:(isUuid(currentUser?.id)?currentUser.id:null),prepared_by:preparedBy,notes:`From ${q.quoteNo}${itemNotes?' — '+itemNotes:''}${deadline?' | Deadline: '+deadline:''}`,is_order_header:i===0,line_index:i,created_by_id:isUuid(currentUser?.id)?currentUser.id:null,no_vat:noVat,vat_enabled:!noVat,vat_amount:i===0?v.vat:0,nhil_amount:i===0?v.nhil:0,getfund_amount:i===0?v.getf:0,total:i===0?v.total:l.subtotal};
+    const row={job_no:jobNo,order_no:orderNo,quotation_id:q.id,customer_id:findCustomerByName(q.client)?.id||null,customer_name:q.client,customer_phone:q.phone||'',branch_name:q.branch,job_date:TODAY(),due_date:dueDate||null,service_type:l.type,description:l.desc,qty:l.qty,unit_price:l.unitPrice,media:l.media||null,finishing,status:'Pending',payment_status:'Unpaid',amount_paid:0,assigned_to_id:assignedStaff?.id||null,assigned_to:assignedTo,prepared_by_id:preparedStaff?.id||currentUser?.id||null,prepared_by:preparedBy,notes:`From ${q.quoteNo}${itemNotes?' — '+itemNotes:''}${deadline?' | Deadline: '+deadline:''}`,is_order_header:i===0,line_index:i,created_by_id:currentUser?.id||null,no_vat:noVat,vat_enabled:!noVat,vat_amount:i===0?v.vat:0,nhil_amount:i===0?v.nhil:0,getfund_amount:i===0?v.getf:0,total:i===0?v.total:l.subtotal};
     const saved=await sbInsert('jobs',row);
     if(!saved)return toastErr('Job order was not saved to Supabase.');
     created.push({id:saved.id,jobNo,orderNo,date:TODAY(),client:q.client,phone:q.phone,type:l.type,desc:l.desc,qty:l.qty,unitPrice:l.unitPrice,subtotal:l.subtotal,vat:i===0?v.totalLevy:0,total:i===0?v.total:l.subtotal,finishing,assignedTo,preparedBy,branch:q.branch,dueDate,deadline,notes:row.notes,status:'Pending',paid:false,paymentStatus:'Unpaid',amountPaid:0,payments:[],noVat:noVat,isLineItem:!isOnly,lineIndex:i+1,totalLines:quoteLines.length,isOrderHeader:i===0,statusLog:[{status:'Pending',ts:new Date().toISOString(),by:preparedBy}]});
@@ -3280,7 +3336,7 @@ async function applyStatus(){
   const ok=await sbUpdate('jobs',id,row);
   if(!ok)return toastErr('Status was not saved to Supabase.');
   try{
-    await sbInsert('job_status_history',{job_id:id,from_status:old,to_status:st,changed_by_id:isUuid(currentUser?.id)?currentUser.id:null,changed_by:currentUser?.name||'',notes:null});
+    await sbInsert('job_status_history',{job_id:id,from_status:old,to_status:st,changed_by_id:currentUser?.id||null,changed_by:currentUser?.name||'',notes:null});
   }catch(e){console.warn('Status history not saved:',e);}
   j.status=st; if(st==='Completed')j.paid=true;
   if(!j.statusLog)j.statusLog=[];
@@ -3332,7 +3388,7 @@ async function applyReassign(){
       job_id:id,
       from_status:j.status,
       to_status:j.status,
-      changed_by_id:isUuid(currentUser?.id)?currentUser.id:null,
+      changed_by_id:currentUser?.id||null,
       changed_by:currentUser?.name||'',
       notes:`Re-assigned from ${oldStaff||'Unassigned'} to ${newStaff}`
     });
@@ -3695,7 +3751,7 @@ async function saveSale(){
   if(!canAccess(['ceo','manager','finance_officer','cso']))return toastErr('Access denied: finance operations require Finance Officer or above.');
   const am=parseFloat(document.getElementById('sAm').value)||0;if(!am)return toastErr('Amount required.');
   const v=calcVAT(am), ref=await nextRef('SL','SL-'+PAD(db.saleCtr++));
-  const row={ref,sale_date:document.getElementById('sD').value||TODAY(),customer_name:sanitise(document.getElementById('sCu').value),service_type:document.getElementById('sSv').value,branch_name:document.getElementById('sBr').value,subtotal:am,vat_amount:v.vat,nhil_amount:v.nhil,getfund_amount:v.getf,total:v.total,payment_method:document.getElementById('sPm').value,description:sanitise(document.getElementById('sDe').value),recorded_by_id:isUuid(currentUser?.id)?currentUser.id:null,recorded_by:currentUser?.name||''};
+  const row={ref,sale_date:document.getElementById('sD').value||TODAY(),customer_name:sanitise(document.getElementById('sCu').value),service_type:document.getElementById('sSv').value,branch_name:document.getElementById('sBr').value,subtotal:am,vat_amount:v.vat,nhil_amount:v.nhil,getfund_amount:v.getf,total:v.total,payment_method:document.getElementById('sPm').value,description:sanitise(document.getElementById('sDe').value),recorded_by_id:currentUser?.id||null,recorded_by:currentUser?.name||''};
   const saved=await sbInsert('sales',row);
   if(!saved)return toastErr('Sale was not saved to Supabase.');
   db.sales.push({id:saved.id,ref,date:row.sale_date,customer:row.customer_name,serviceType:row.service_type,branch:row.branch_name,subtotal:am,vat:v.totalLevy,credit:v.total,payment:row.payment_method,desc:row.description});
@@ -3707,7 +3763,7 @@ async function saveExp(){
   const am=parseFloat(document.getElementById('eAm').value)||0;if(!am)return toastErr('Amount required.');
   const claim=document.getElementById('eVatClaim').value==='1';const v=claim?calcVAT(am):{vat:0,nhil:0,getf:0,totalLevy:0,total:am};
   const ref=await nextRef('EXP','EX-'+PAD(db.expCtr++));
-  const row={ref,expense_date:document.getElementById('eD').value||TODAY(),category:document.getElementById('eCat').value,vendor:sanitise(document.getElementById('eVe').value),branch_name:document.getElementById('eBr').value,subtotal:am,vat_input:v.totalLevy||0,total:v.total,payment_method:document.getElementById('ePm').value,description:sanitise(document.getElementById('eDe').value),vat_claim:claim,recorded_by_id:isUuid(currentUser?.id)?currentUser.id:null,recorded_by:currentUser?.name||''};
+  const row={ref,expense_date:document.getElementById('eD').value||TODAY(),category:document.getElementById('eCat').value,vendor:sanitise(document.getElementById('eVe').value),branch_name:document.getElementById('eBr').value,subtotal:am,vat_input:v.totalLevy||0,total:v.total,payment_method:document.getElementById('ePm').value,description:sanitise(document.getElementById('eDe').value),vat_claim:claim,recorded_by_id:currentUser?.id||null,recorded_by:currentUser?.name||''};
   const saved=await sbInsert('expenses',row);
   if(!saved)return toastErr('Expense was not saved to Supabase.');
   db.expenses.push({id:saved.id,ref,date:row.expense_date,category:row.category,vendor:row.vendor,branch:row.branch_name,subtotal:am,vatInput:row.vat_input,debit:row.total,payment:row.payment_method,desc:row.description,vatClaim:claim?1:0});
@@ -3807,31 +3863,31 @@ function setDashBranch(branch,el){
 }
 function rDash(){
   const now=new Date();
-  const isFull=!myBranch()||currentUser?.role==='super'; // CEO / Finance Manager / Finance Officer / Super Admin
+  const isFull=isCentralDashboardUser(); // central users see consolidated data unless a branch filter is selected
   // Show/hide branch toggle
   const toggleEl=document.getElementById('dashBranchToggle');
   if(toggleEl){toggleEl.style.display=isFull?'flex':'none';}
-  // Determine effective filter: full users use _dashBranch, branch users always see their branch
-  const _effBranch=isFull?(_dashBranch==='All'?null:_dashBranch):myBranch();
-  const _vis=_effBranch?db.sales.filter(s=>s.branch===_effBranch):db.sales;
-  const _visExp=_effBranch?db.expenses.filter(e=>e.branch===_effBranch):db.expenses;
-  const _visJobs=_effBranch?db.jobs.filter(j=>j.branch===_effBranch):db.jobs;
-  const _visPC=_effBranch?db.pettyCash.filter(p=>p.branch===_effBranch):db.pettyCash;
+  // Determine effective filter: central users use _dashBranch, branch users always see their own branch
+  const _effBranch=effectiveDashboardBranch();
+  const _vis=visiblePayments(_effBranch); // dashboard revenue source of truth = actual payments received
+  const _visExp=_effBranch?db.expenses.filter(e=>branchMatches(branchOf(e),_effBranch)):db.expenses;
+  const _visJobs=_effBranch?db.jobs.filter(j=>branchMatches(branchOf(j),_effBranch)):db.jobs;
+  const _visPC=_effBranch?db.pettyCash.filter(p=>branchMatches(branchOf(p),_effBranch)):db.pettyCash;
   const branchLabel=_effBranch?_effBranch+' Branch':'All Branches';
   document.getElementById('dashSub').textContent=branchLabel+' — '+now.toLocaleDateString('en-GH',{dateStyle:'full'});
   const _role=currentUser?.role||'cso';
   const _dashLbl=_role==='super'?'All Dashboard':_effBranch?_effBranch+' Dashboard':'Owner Dashboard';
   document.getElementById('dashTitle').textContent=_dashLbl;
-  const rev=_vis.reduce((s,x)=>s+x.credit,0);
-  const revExVat=_vis.reduce((s,x)=>s+(x.subtotal||x.credit),0);
+  const rev=R2(_vis.reduce((s,x)=>s+paymentAmount(x),0));
+  const revExVat=R2(_vis.reduce((s,x)=>s+paymentNetAmount(x),0));
   const exp=_visExp.reduce((s,e)=>s+e.debit,0);
   const comp=_visJobs.filter(j=>j.status==='Completed').length;
   const pend=_visPC.filter(p=>p.status==='Pending').length;
-  const npVal=R2(revExVat-_visExp.reduce((s,e)=>s+e.subtotal,0));
+  const npVal=R2(revExVat-_visExp.reduce((s,e)=>s+parseFloat(e.subtotal||e.debit||0),0));
   // Row 2: additional KPIs
-  const outstanding=_visJobs.filter(j=>!j.paid&&j.status!=='Cancelled').reduce((s,j)=>s+j.total,0);
-  const thisMonthRev=_vis.filter(s=>{const d=new Date(s.date);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();}).reduce((s,x)=>s+x.credit,0);
-  const lastMonthRev=_vis.filter(s=>{const d=new Date(s.date);const lm=new Date(now.getFullYear(),now.getMonth()-1,1);return d.getMonth()===lm.getMonth()&&d.getFullYear()===lm.getFullYear();}).reduce((s,x)=>s+x.credit,0);
+  const outstanding=R2(dashboardOutstanding(_visJobs));
+  const thisMonthRev=R2(_vis.filter(p=>{const d=new Date(paymentDateValue(p));return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();}).reduce((s,x)=>s+paymentAmount(x),0));
+  const lastMonthRev=R2(_vis.filter(p=>{const d=new Date(paymentDateValue(p));const lm=new Date(now.getFullYear(),now.getMonth()-1,1);return d.getMonth()===lm.getMonth()&&d.getFullYear()===lm.getFullYear();}).reduce((s,x)=>s+paymentAmount(x),0));
   const revGrowth=lastMonthRev>0?Math.round((thisMonthRev-lastMonthRev)/lastMonthRev*100):0;
   const completionRate=_visJobs.length>0?Math.round(comp/_visJobs.length*100):0;
   const inProdCount=_visJobs.filter(j=>j.status==='In Production').length;
@@ -3908,7 +3964,7 @@ function rDash(){
     document.getElementById('dashStats').innerHTML=`
       <div class="sc gold"><div class="sl">Total Revenue (incl. VAT)</div><div class="sv">${GHS(rev)}</div><div class="ss">All time</div></div>
       <div class="sc ok2"><div class="sl">Jobs Completed</div><div class="sv">${comp}</div><div class="ss">of ${_visJobs.length} total</div></div>
-      <div class="sc info2"><div class="sl">Quotations</div><div class="sv">${filterByBranch(db.quotations).length}</div><div class="ss">${filterByBranch(db.quotations).filter(q=>q.status==='Approved').length} approved</div></div>
+      <div class="sc info2"><div class="sl">Quotations</div><div class="sv">${_effBranch?db.quotations.filter(q=>branchMatches(branchOf(q),_effBranch)).length:db.quotations.length}</div><div class="ss">${(_effBranch?db.quotations.filter(q=>branchMatches(branchOf(q),_effBranch)):db.quotations).filter(q=>q.status==='Approved').length} approved</div></div>
       <div class="sc warn2"><div class="sl">Pending PC</div><div class="sv">${pend}</div><div class="ss">Awaiting approval</div></div>
       <div class="sc ${npVal>=0?'ok2':'err2'}"><div class="sl">Net Profit</div><div class="sv" style="color:${npVal>=0?'var(--ok)':'var(--err)'}">${GHS(npVal)}</div><div class="ss">Excl. VAT</div></div>
     `;
@@ -3935,10 +3991,10 @@ function rDash(){
   const nkCard=document.getElementById('nk-pipe')?.closest('.card');
   if(awCard)awCard.style.display=_showAw?'':'none';
   if(nkCard)nkCard.style.display=_showNK?'':'none';
-  const rec=filterByBranch([...db.jobs].reverse()).slice(0,7);
+  const rec=(_effBranch?[...db.jobs].reverse().filter(j=>branchMatches(branchOf(j),_effBranch)):[...db.jobs].reverse()).slice(0,7);
   document.getElementById('dashJobs').innerHTML=rec.length?rec.map(j=>`<tr><td style="color:var(--muted)">${j.date}</td><td><code style="font-size:10px">${j.jobNo}</code></td><td><strong>${j.client}</strong></td><td>${j.type}</td><td><span class="b b-i">${j.branch}</span></td><td style="text-align:right;font-weight:700">${N(j.total)}</td><td>${sbadge(j.status)}</td></tr>`).join(''):'<tr><td colspan="7" style="text-align:center;color:var(--faint);padding:18px">No jobs.</td></tr>';
-  // Top clients
-  const clientRev={};filterByBranch(db.sales).forEach(s=>{clientRev[s.customer]=(clientRev[s.customer]||0)+s.credit;});
+  // Top clients by actual payments received
+  const clientRev={};_vis.forEach(p=>{const c=paymentClient(p);clientRev[c]=(clientRev[c]||0)+paymentAmount(p);});
   const top=Object.entries(clientRev).sort((a,b)=>b[1]-a[1]).slice(0,6);
   const maxRev=top[0]?top[0][1]:1;
   document.getElementById('topClients').innerHTML=top.length?top.map(([n,v])=>`<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span style="color:var(--text)">${n}</span><strong>${GHS(v)}</strong></div><div class="pbar"><div class="pfill" style="width:${Math.round(v/maxRev*100)}%;background:var(--gold)"></div></div></div>`).join(''):'<p style="color:var(--faint);font-size:12px">No sales data.</p>';
@@ -3966,9 +4022,9 @@ function rDash(){
   }
   const pPI=filterByBranch(db.pettyCash).filter(p=>p.status==='Pending').slice(0,5);
   document.getElementById('dashPC').innerHTML=pPI.length?pPI.map(p=>`<tr><td><strong>${p.requestedBy}</strong></td><td><span class="b b-i">${p.branch}</span></td><td>${GHS(p.amount)}</td><td style="color:var(--muted)">${p.purpose}</td></tr>`).join(''):'<tr><td colspan="4" style="text-align:center;color:var(--faint);padding:16px">None pending.</td></tr>';
-  const aS=db.sales.filter(s=>s.branch==='Awoshie').reduce((t,s)=>t+s.credit,0);
-  const nS=db.sales.filter(s=>s.branch==='North Kaneshie').reduce((t,s)=>t+s.credit,0);
-  const branchRev=_vis.reduce((t,s)=>t+s.credit,0);
+  const aS=visiblePayments('Awoshie').reduce((t,p)=>t+paymentAmount(p),0);
+  const nS=visiblePayments('North Kaneshie').reduce((t,p)=>t+paymentAmount(p),0);
+  const branchRev=_vis.reduce((t,p)=>t+paymentAmount(p),0);
   const tot=rev||1;
   const revEl=document.getElementById('revSummary');
   if(_effBranch){
@@ -3996,10 +4052,10 @@ function buildRevChart(_effBranch){
     const d=new Date(now.getFullYear(),now.getMonth()-i,1);
     months.push(d.toLocaleString('default',{month:'short',year:'2-digit'}));
     const y=d.getFullYear(),m=d.getMonth();
-    const mSales=db.sales.filter(s=>{const sd=new Date(s.date);return sd.getFullYear()===y&&sd.getMonth()===m;});
-    aw.push(R2(mSales.filter(s=>s.branch==='Awoshie').reduce((t,s)=>t+s.credit,0)));
-    nk.push(R2(mSales.filter(s=>s.branch==='North Kaneshie').reduce((t,s)=>t+s.credit,0)));
-    single.push(R2(mSales.filter(s=>!_effBranch||s.branch===_effBranch).reduce((t,s)=>t+s.credit,0)));
+    const mPays=(Array.isArray(db.payments)?db.payments:[]).filter(p=>{const sd=new Date(paymentDateValue(p));return sd.getFullYear()===y&&sd.getMonth()===m;});
+    aw.push(R2(mPays.filter(p=>branchMatches(paymentBranch(p),'Awoshie')).reduce((t,p)=>t+paymentAmount(p),0)));
+    nk.push(R2(mPays.filter(p=>branchMatches(paymentBranch(p),'North Kaneshie')).reduce((t,p)=>t+paymentAmount(p),0)));
+    single.push(R2(mPays.filter(p=>!_effBranch||branchMatches(paymentBranch(p),_effBranch)).reduce((t,p)=>t+paymentAmount(p),0)));
   }
   const datasets=_effBranch?
     [{label:_effBranch,data:single,backgroundColor:_effBranch==='Awoshie'?'rgba(201,153,58,0.85)':'rgba(26,46,74,0.85)',borderRadius:5}]:
@@ -4211,54 +4267,44 @@ async function initApp() {
   if (loginScr) loginScr.style.display = 'none';
   if (msg) msg.textContent = 'Checking session…';
 
-  // ── Restore user on page refresh ────────────────────────────────────────
-  // PIN authentication is handled by the Edge Function. In the browser we use
-  // Supabase anon REST access plus the verified profile saved at login.
-  // IMPORTANT: Do NOT fetch "limit=1" from user_profiles here — that can pick
-  // Super Admin and switch the user after refresh. Restore the exact person
-  // who logged in.
-  const savedProfile = localStorage.getItem('_bms_profile');
+  // ── Restore session on page refresh ─────────────────────────────────────
+  // One valid path only: a Supabase JWT stored in _sb_session that has not
+  // yet expired. There is no profile-cache fallback, no local extension.
+  // If no valid JWT exists the login screen is shown immediately.
   const savedSession = localStorage.getItem('_sb_session');
 
-  if (savedProfile) {
+  if (savedSession) {
     try {
-      const p = JSON.parse(savedProfile);
-      if (p && p.name) {
-        currentUser = {
-          id:     p.id || null,
-          name:   p.name || p.full_name,
-          role:   normaliseRole(p.role || 'cso'),
-          branch: p.branch || p.branch_name || 'All'
-        };
-
-        // Keep a lightweight session object if one exists. sbHeaders() uses
-        // the anon key only, but some helper code checks that _sbSession exists.
-        try {
-          _sbSession = savedSession ? JSON.parse(savedSession) : {
-            access_token: 'pin-session',
-            refresh_token: null,
-            expires_at: Math.floor(Date.now() / 1000) + 86400
-          };
-        } catch(_) {
-          _sbSession = { access_token: 'pin-session', refresh_token: null, expires_at: Math.floor(Date.now() / 1000) + 86400 };
-        }
-
+      const s = JSON.parse(savedSession);
+      // Require at least 60 seconds of remaining validity
+      if (s.access_token && s.expires_at && Date.now() / 1000 < s.expires_at - 60) {
+        _sbSession = s;
         _sbHeaders = sbHeaders();
-        if (msg) msg.textContent = `Loading ${currentUser.name}'s workspace…`;
-        await loadAllData();
-        if (loading) loading.style.display = 'none';
-        completeLogin();
-        return;
+        if (msg) msg.textContent = 'Loading your data…';
+        const profile = await fetchCurrentProfile();
+        if (profile) {
+          currentUser = profile;
+          await loadAllData();
+          if (loading) loading.style.display = 'none';
+          completeLogin();
+          return;
+        }
+        // JWT present but profile fetch failed — session may be invalid
+        localStorage.removeItem('_sb_session');
+        localStorage.removeItem('_bms_profile');
+        _sbSession = null;
+      } else {
+        // JWT expired — discard and require fresh login
+        localStorage.removeItem('_sb_session');
+        localStorage.removeItem('_bms_profile');
       }
     } catch(e) {
-      localStorage.removeItem('_bms_profile');
       localStorage.removeItem('_sb_session');
-      _sbSession = null;
-      currentUser = null;
+      localStorage.removeItem('_bms_profile');
     }
   }
 
-  // No saved verified profile — show login screen
+  // No valid JWT — show login screen
   loadFromLocalCache();
   setTimeout(() => {
     if (loading) loading.style.display = 'none';
@@ -4366,6 +4412,7 @@ async function loadAllData() {
 
     // Attach payment history from Supabase so invoices show previous part/full payments after refresh.
     const mappedPayments=(payments||[]).map(mapPayment);
+    db.payments = mappedPayments;
     const quoteById={};
     db.quotations.forEach(q=>{ quoteById[q.id]=q; if(!q.payments) q.payments=[]; });
     const jobsById={};
@@ -4607,6 +4654,8 @@ function mapPayment(p) {
     amount: parseFloat(p.amount || 0) || 0,
     method: p.method || p.payment_method || 'Cash',
     by: p.received_by || p.recorded_by || '',
+    branch: p.branch || p.branch_name || p.branchName || '',
+    customer: p.customer_name || p.customer || p.client || '',
     notes: p.notes || ''
   };
 }
@@ -5248,7 +5297,7 @@ async function applyPartPayment(){
   const ref=inv.isQuote?inv.quote.quoteNo:(inv.firstJob?.orderNo||inv.firstJob?.jobNo||'');
   const branch=inv.isQuote?(inv.quote.branch||inv.quote.branch_name):(inv.firstJob.branch||inv.firstJob.branch_name);
   const paymentRef=await nextRef('PMT','PMT-'+PAD(Date.now()%10000));
-  const paymentRow={payment_ref:paymentRef,job_id:inv.isQuote?null:(inv.firstJob?.id||null),order_no:inv.isQuote?null:(inv.firstJob?.orderNo||null),quotation_id:inv.isQuote?inv.quote.id:null,customer_name:inv.client,branch_name:branch,payment_date:TODAY(),amount:amt,method,notes:`Payment on ${ref}`,received_by_id:isUuid(currentUser?.id)?currentUser.id:null,received_by:currentUser?.name||''};
+  const paymentRow={payment_ref:paymentRef,job_id:inv.isQuote?null:(inv.firstJob?.id||null),order_no:inv.isQuote?null:(inv.firstJob?.orderNo||null),quotation_id:inv.isQuote?inv.quote.id:null,customer_name:inv.client,branch_name:branch,payment_date:TODAY(),amount:amt,method,notes:`Payment on ${ref}`,received_by_id:currentUser?.id||null,received_by:currentUser?.name||''};
   const paySaved=await sbInsert('payments',paymentRow);
   if(!paySaved){toastErr('Payment was not saved. Check payments policy/columns.');return;}
 
@@ -5269,7 +5318,7 @@ async function applyPartPayment(){
     const saleRef=await nextRef('SL','SL-'+PAD(db.saleCtr++));
     const saleSub=inv.noVat ? R2(amt) : R2(amt/(1+totalLevy()/100));
     const saleVat=inv.noVat ? 0 : R2(amt-saleSub);
-    const saleRow={ref:saleRef,sale_date:TODAY(),customer_name:inv.client,service_type:inv.isQuote?'Quotation':(inv.firstJob?.type||'Print Services'),branch_name:branch,payment_id:paySaved.id||null,job_id:inv.isQuote?null:(inv.firstJob?.id||null),subtotal:saleSub,vat_amount:saleVat,total:amt,payment_method:method,description:`Payment on ${ref} — Balance: ${GHS(newBalance)}`,recorded_by_id:isUuid(currentUser?.id)?currentUser.id:null,recorded_by:currentUser?.name||''};
+    const saleRow={ref:saleRef,sale_date:TODAY(),customer_name:inv.client,service_type:inv.isQuote?'Quotation':(inv.firstJob?.type||'Print Services'),branch_name:branch,payment_id:paySaved.id||null,job_id:inv.isQuote?null:(inv.firstJob?.id||null),subtotal:saleSub,vat_amount:saleVat,total:amt,payment_method:method,description:`Payment on ${ref} — Balance: ${GHS(newBalance)}`,recorded_by_id:currentUser?.id||null,recorded_by:currentUser?.name||''};
     const savedSale=await sbInsert('sales',saleRow);
     db.sales.push({id:savedSale?.id||UID(),ref:saleRef,date:TODAY(),customer:inv.client,serviceType:saleRow.service_type,branch,subtotal:saleSub,vat:saleVat,credit:amt,payment:method,desc:saleRow.description});
   }catch(e){console.warn('Sales ledger entry failed after payment was saved:',e);}
