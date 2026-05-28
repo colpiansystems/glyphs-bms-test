@@ -2150,8 +2150,13 @@ function branchOf(x){
   return (x?.branch || x?.branch_name || x?.branchName || '').trim();
 }
 function branchMatches(a,b){
-  const av=String(a||'').trim().toLowerCase();
-  const bv=String(b||'').trim().toLowerCase();
+  const norm=v=>String(v||'')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+branch$/,'')
+    .replace(/\s+/g,' ');
+  const av=norm(a);
+  const bv=norm(b);
   if(!bv || bv==='all') return true;
   return av===bv || av==='all';
 }
@@ -2384,13 +2389,10 @@ function getMediaOptions(serviceType, selectedVal='') {
 const FINISHING_TYPES=['N/A','Trimming','Lamination (Gloss)','Lamination (Matt)','Binding (Spiral)','Binding (Perfect)','Pressing on Shirt','Doming Gel','Scotch Mount','Suspension Screws','Super Glue','Other'];
 let _jobLines=[];
 function getStaffOptions(branch){
-  // Determine which branch to filter by
   const b=branch||document.getElementById('jBr')?.value||myBranch()||'Awoshie';
-  // Filter: always show staff from the specified branch
-  return db.staff
-    .filter(s=>isProductionRole(s.role)&&branchMatches(branchOf(s),b))
-    .map(s=>`<option>${s.name}</option>`)
-    .join('');
+  let staff=(db.staff||[]).filter(s=>isProductionRole(s.role)&&branchMatches(branchOf(s),b));
+  if(!staff.length) staff=(db.staff||[]).filter(s=>isProductionRole(s.role));
+  return staff.map(s=>`<option>${s.name}</option>`).join('');
 }
 function addJobLine(){
   snapshotJobLines();          // save everything typed so far
@@ -2771,7 +2773,7 @@ async function saveQuote(){
   const qrow={quote_no:quoteNo,customer_id:cust?.id||null,customer_name:cl,customer_phone:sanitise(document.getElementById('qPh').value),branch_name:branch,branch:branch,quote_date:TODAY(),valid_until:document.getElementById('qVd').value||null,status:'Draft',notes:sanitise(document.getElementById('qNo').value),description:qDesc,service_type:qType,qty:lines.reduce((sum,l)=>sum+l.qty,0),unit_price:lines.length===1?lines[0].unitPrice:0,subtotal:grandSub,vat_amount:v.vat,nhil_amount:v.nhil,getfund_amount:v.getf,total:v.total,amount_paid:0,prepared_by_id:currentUser?.id||null,prepared_by:currentUser?.name||'',no_vat:noVat,vat_enabled:!noVat};
   const saved=await sbInsert('quotations',qrow);
   if(!saved)return toastErr('Quotation was not saved to Supabase.');
-  const itemRows=lines.map((l,i)=>({quotation_id:saved.id,line_number:i+1,description:l.desc,service_type:l.type,qty:l.qty,unit_price:l.unitPrice,subtotal:l.subtotal,media:l.media||null,finishing:l.finishing||l.note||null,notes:l.note||'',no_vat:noVat,sort_order:i}));
+  const itemRows=lines.map((l,i)=>({quotation_id:saved.id,line_number:i+1,description:l.desc,service_type:l.type,qty:l.qty,unit_price:l.unitPrice,media:l.media||null,finishing:l.finishing||l.note||null,notes:l.note||'',no_vat:noVat,sort_order:i}));
   const savedItems=await sbInsertMany('quotation_items',itemRows);
   if(!savedItems || savedItems.length!==itemRows.length) console.warn('Some quotation items may not have saved. Check quotation_items policy/columns.');
   const q={id:saved.id,quoteNo,date:TODAY(),client:cl,phone:qrow.customer_phone,whatsapp:sanitise(document.getElementById('qWA').value),lines:lines.map(l=>({type:l.type,desc:l.desc,qty:l.qty,unitPrice:l.unitPrice,subtotal:l.subtotal,note:l.note,media:l.media,finishing:l.finishing})),type:qType,desc:qDesc,qty:qrow.qty,unitPrice:qrow.unit_price,subtotal:grandSub,vat:v.totalLevy,total:v.total,branch,validUntil:qrow.valid_until,notes:qrow.notes,status:'Draft',amountPaid:0,payments:[],noVat:noVat};
@@ -2877,7 +2879,8 @@ function openConvertModal(id){
   document.getElementById('convDueDate').value=dd.toISOString().slice(0,10);
 
   const quoteLines=safeQuoteLines(q);
-  const branchStaff=db.staff.filter(s=>isProductionRole(s.role)&&branchMatches(branchOf(s),q.branch));
+  let branchStaff=(db.staff||[]).filter(s=>isProductionRole(s.role)&&branchMatches(branchOf(s),q.branch));
+  if(!branchStaff.length) branchStaff=(db.staff||[]).filter(s=>isProductionRole(s.role));
   const staffOpts=branchStaff.map(s=>`<option>${s.name}</option>`).join('');
 
   document.getElementById('convLinesContainer').innerHTML=quoteLines.map((l,i)=>`
