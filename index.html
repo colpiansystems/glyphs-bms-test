@@ -4652,6 +4652,7 @@ function mapPayment(p) {
   return {
     id: p.id,
     payment_ref: p.payment_ref || p.ref || '',
+    invoice_ref: p.invoice_ref || p.invoiceRef || p.quote_no || p.quoteNo || p.order_no || p.orderNo || '',
     quotation_id: p.quotation_id || null,
     quote_no: p.quote_no || p.quoteNo || '',
     job_id: p.job_id || null,
@@ -5242,33 +5243,52 @@ function quoteForJob(j){
   if(!j)return null;
   return db.quotations.find(q=>q.id===j.quotation_id || q.id===j.quote_id || q.quoteNo===j.quoteNo || q.quote_no===j.quoteNo || (j.notes||'').includes(q.quoteNo))||null;
 }
+function normLedgerText(v){return String(v||'').trim().toLowerCase().replace(/\s+/g,' ');}
+function paymentBelongsToClient(p,client){
+  const pc=normLedgerText(p.customer||p.customer_name||p.client||'');
+  const ic=normLedgerText(client||'');
+  return !pc || !ic || pc===ic;
+}
+function paymentRefOf(p){return String(p.invoice_ref||p.invoiceRef||p.quote_no||p.quoteNo||p.order_no||p.orderNo||p.ref||'').trim();}
 function invoicePaymentsForQuote(q){
   if(!q)return[];
   const jobs=jobsForQuote(q);
   const orderNos=new Set(jobs.map(j=>j.orderNo||j.order_no).filter(Boolean));
   const jobIds=new Set(jobs.map(j=>j.id).filter(Boolean));
-  const rows=(Array.isArray(db.payments)?db.payments:[]).filter(p=>
-    p.quotation_id===q.id ||
-    (p.quote_no&&p.quote_no===q.quoteNo) ||
-    (p.order_no&&orderNos.has(p.order_no)) ||
-    (p.orderNo&&orderNos.has(p.orderNo)) ||
-    (p.job_id&&jobIds.has(p.job_id))
-  );
-  return uniqPayments([...(q.payments||[]), ...jobs.flatMap(j=>j.payments||[]), ...rows]).sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')));
+  const qRefs=new Set([q.quoteNo,q.quote_no,q.invoice_ref,q.invoiceRef].filter(Boolean));
+  const rows=(Array.isArray(db.payments)?db.payments:[]).filter(p=>{
+    if(!paymentBelongsToClient(p,q.client)) return false;
+    const pref=paymentRefOf(p);
+    return (p.quotation_id&&p.quotation_id===q.id) ||
+      (pref&&qRefs.has(pref)) ||
+      (p.quote_no&&qRefs.has(p.quote_no)) ||
+      (p.quoteNo&&qRefs.has(p.quoteNo)) ||
+      (p.order_no&&orderNos.has(p.order_no)) ||
+      (p.orderNo&&orderNos.has(p.orderNo)) ||
+      (p.job_id&&jobIds.has(p.job_id));
+  });
+  const local=[...(q.payments||[]), ...jobs.flatMap(j=>j.payments||[])].filter(p=>paymentBelongsToClient(p,q.client));
+  return uniqPayments([...local, ...rows]).sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')));
 }
 function invoicePaymentsForJobs(orderJobs){
   const jobs=Array.isArray(orderJobs)?orderJobs:[];
   const first=jobs[0]||{};
   const q=quoteForJob(first);
+  const client=first.client||q?.client||'';
   const orderNos=new Set(jobs.map(j=>j.orderNo||j.order_no).filter(Boolean));
   const jobIds=new Set(jobs.map(j=>j.id).filter(Boolean));
-  const rows=(Array.isArray(db.payments)?db.payments:[]).filter(p=>
-    (q&&p.quotation_id===q.id) ||
-    (p.order_no&&orderNos.has(p.order_no)) ||
-    (p.orderNo&&orderNos.has(p.orderNo)) ||
-    (p.job_id&&jobIds.has(p.job_id))
-  );
-  return uniqPayments([...(q?.payments||[]), ...jobs.flatMap(j=>j.payments||[]), ...rows]).sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')));
+  const qRefs=new Set([q?.quoteNo,q?.quote_no,q?.invoice_ref,q?.invoiceRef].filter(Boolean));
+  const rows=(Array.isArray(db.payments)?db.payments:[]).filter(p=>{
+    if(!paymentBelongsToClient(p,client)) return false;
+    const pref=paymentRefOf(p);
+    return (q&&p.quotation_id&&p.quotation_id===q.id) ||
+      (pref&&qRefs.has(pref)) ||
+      (p.order_no&&orderNos.has(p.order_no)) ||
+      (p.orderNo&&orderNos.has(p.orderNo)) ||
+      (p.job_id&&jobIds.has(p.job_id));
+  });
+  const local=[...(q?.payments||[]), ...jobs.flatMap(j=>j.payments||[])].filter(p=>paymentBelongsToClient(p,client));
+  return uniqPayments([...local, ...rows]).sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')));
 }
 function syncInvoicePaymentStateForQuote(q){
   if(!q)return;
@@ -5373,6 +5393,7 @@ async function applyPartPayment(){
   const paymentRef=await nextRef('PMT','PMT-'+PAD(Date.now()%10000));
   const paymentRow={
     payment_ref:paymentRef,
+    invoice_ref:ref,
     job_id:linkedFirstJob?.id||null,
     order_no:linkedFirstJob?.orderNo||linkedFirstJob?.order_no||null,
     quotation_id:linkedQuote?.id||null,
