@@ -2930,6 +2930,10 @@ function isCsoLikeRole(v){
   const r=roleKey(v);
   return ['cso','manager','ceo','sysadmin','super_admin','super'].includes(r);
 }
+function isUuidValue(v){
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(v||''));
+}
+
 function quoteNoVat(q){
   // VAT must follow the user's explicit quotation choice only.
   // Do NOT infer No VAT from zero VAT amounts, because new/failed records can have 0 before sync.
@@ -3118,7 +3122,7 @@ async function applyConvertToJob(){
     const deadline=document.getElementById(`conv_deadline_${i}`)?.value?.trim()||'';
     const itemNotes=document.getElementById(`conv_notes_${i}`)?.value?.trim()||l.note||'';
     const finishing=document.getElementById(`conv_finish_${i}`)?.value||l.finishing||'SPACE';
-    const row={job_no:jobNo,order_no:orderNo,quotation_id:q.id,customer_id:findCustomerByName(q.client)?.id||null,customer_name:q.client,customer_phone:q.phone||'',branch_name:q.branch,job_date:TODAY(),due_date:dueDate||null,service_type:l.type,description:l.desc,qty:l.qty,unit_price:l.unitPrice,media:l.media||null,finishing,status:'Pending',payment_status:'Unpaid',amount_paid:0,assigned_to_id:assignedStaff?.id||null,assigned_to:assignedTo,prepared_by_id:preparedStaff?.id||currentUser?.id||null,prepared_by:preparedBy,notes:`From ${q.quoteNo}${itemNotes?' — '+itemNotes:''}${deadline?' | Deadline: '+deadline:''}`,is_order_header:i===0,line_index:i,created_by_id:currentUser?.id||null,no_vat:noVat,vat_enabled:!noVat,vat_amount:i===0?v.vat:0,nhil_amount:i===0?v.nhil:0,getfund_amount:i===0?v.getf:0,total:i===0?v.total:l.subtotal};
+    const row={job_no:jobNo,order_no:orderNo,quotation_id:q.id,customer_id:findCustomerByName(q.client)?.id||null,customer_name:q.client,customer_phone:q.phone||'',branch_name:q.branch,job_date:TODAY(),due_date:dueDate||null,service_type:l.type,description:l.desc,qty:l.qty,unit_price:l.unitPrice,media:l.media||null,finishing,status:'Pending',payment_status:'Unpaid',amount_paid:0,assigned_to_id:isUuidValue(assignedStaff?.id)?assignedStaff.id:null,assigned_to:assignedTo,prepared_by_id:isUuidValue(preparedStaff?.id)?preparedStaff.id:(isUuidValue(currentUser?.id)?currentUser.id:null),prepared_by:preparedBy,notes:`From ${q.quoteNo}${itemNotes?' — '+itemNotes:''}${deadline?' | Deadline: '+deadline:''}`,is_order_header:i===0,line_index:i,created_by_id:currentUser?.id||null,no_vat:noVat,vat_enabled:!noVat,vat_amount:i===0?v.vat:0,nhil_amount:i===0?v.nhil:0,getfund_amount:i===0?v.getf:0,total:i===0?v.total:l.subtotal};
     const saved=await sbInsert('jobs',row);
     if(!saved)return toastErr('Job order was not saved to Supabase.');
     created.push({id:saved.id,jobNo,orderNo,date:TODAY(),client:q.client,phone:q.phone,type:l.type,desc:l.desc,qty:l.qty,unitPrice:l.unitPrice,subtotal:l.subtotal,vat:i===0?v.totalLevy:0,total:i===0?v.total:l.subtotal,finishing,assignedTo,preparedBy,branch:q.branch,dueDate,deadline,notes:row.notes,status:'Pending',paid:false,paymentStatus:'Unpaid',amountPaid:0,payments:[],noVat:noVat,isLineItem:!isOnly,lineIndex:i+1,totalLines:quoteLines.length,isOrderHeader:i===0,statusLog:[{status:'Pending',ts:new Date().toISOString(),by:preparedBy}]});
@@ -3395,7 +3399,7 @@ async function applyReassign(){
   }catch(e){console.warn('Reassignment history not saved:', e);}
   j.assignedTo=newStaff;
   j.assigned_to=newStaff;
-  if(staff?.id)j.assigned_to_id=staff.id;
+  if(isUuidValue(staff?.id))j.assigned_to_id=staff.id;
   if(!j.statusLog)j.statusLog=[];
   j.statusLog.push({status:j.status,ts:new Date().toISOString(),by:currentUser?.name||'',note:`Re-assigned from ${oldStaff||'Unassigned'} to ${newStaff}`});
   logActivity('status',`${j.jobNo} re-assigned from ${oldStaff||'Unassigned'} to ${newStaff}`);
